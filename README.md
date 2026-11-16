@@ -52,6 +52,8 @@ url: https://wiki.seeedstudio.com/rebot_arm_b601_dm_grasping_demo/
 
 ## Project Introduction
 
+> 💡 **Looking for the Web UI?** Check out the [Web Picking Station User Guide](docs/WEB_GUI_USER_GUIDE.md) for step-by-step instructions on operating the browser dashboard, ordering tube grasps, editing waypoints, and safety controls.
+
 **reBot Arm B601 Visual Grasping Demo** is a visual grasping algorithm demonstration project based on the [reBot Arm B601](https://github.com/vectorBH6/reBotArm_control_py) robotic arm control library and RGB-D depth camera. The system supports both DM and RS configurations for the B601 arm. It uses the YOLO model for real-time desktop object detection, estimates grasp poses via OBB minimum-area rectangles, performs hand-eye calibration to transform grasp points from the camera frame to the robot base frame, and drives the robotic arm to complete autonomous grasping.
 
 ### Core Features

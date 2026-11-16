@@ -169,6 +169,40 @@ RETREAT_WAYPOINTS: list[dict[str, Any]] = [
 ]
 
 # ==============================================================================
+# WAYPOINTS CONFIGURATION (ADAPTS FROM config/waypoints.yaml WITH SAFE FALLBACKS)
+# ==============================================================================
+WAYPOINTS_CONFIG_FILE = PROJECT_ROOT / "config" / "waypoints.yaml"
+if WAYPOINTS_CONFIG_FILE.exists():
+    try:
+        import yaml
+        with open(WAYPOINTS_CONFIG_FILE, "r", encoding="utf-8") as _w_f:
+            _loaded_cfg = yaml.safe_load(_w_f) or {}
+        _loaded_wps = _loaded_cfg.get("waypoints", {})
+        if "approach" in _loaded_wps and isinstance(_loaded_wps["approach"], list):
+            APPROACH_WAYPOINTS = _loaded_wps["approach"]
+        if "retreat" in _loaded_wps and isinstance(_loaded_wps["retreat"], list):
+            RETREAT_WAYPOINTS = _loaded_wps["retreat"]
+        _loaded_params = _loaded_cfg.get("motion_parameters", {})
+        if "fixed_grasp_rpy" in _loaded_params and isinstance(_loaded_params["fixed_grasp_rpy"], dict):
+            FIXED_GRASP_RPY = _loaded_params["fixed_grasp_rpy"]
+        if "pregrasp" in _loaded_params and isinstance(_loaded_params["pregrasp"], dict):
+            _pg = _loaded_params["pregrasp"]
+            ENABLE_PREGRASP = _pg.get("enabled", ENABLE_PREGRASP)
+            for _k in ("dx", "dy", "dz", "duration"):
+                if _k in _pg:
+                    PREGRASP_OFFSET_BASE[_k] = float(_pg[_k])
+        if "grasp" in _loaded_params and isinstance(_loaded_params["grasp"], dict):
+            _g = _loaded_params["grasp"]
+            GRASP_MOVE_DURATION = float(_g.get("move_duration", GRASP_MOVE_DURATION))
+            GRIPPER_READY_OPEN_M = float(_g.get("ready_open_m", GRIPPER_READY_OPEN_M))
+            GRIPPER_CLOSE_OFFSET_M = float(_g.get("close_offset_m", GRIPPER_CLOSE_OFFSET_M))
+            if "fixed_close_m" in _g and _g["fixed_close_m"] is not None:
+                GRIPPER_FIXED_CLOSE_M = float(_g["fixed_close_m"])
+        print(f"[Config] Loaded active waypoints from {WAYPOINTS_CONFIG_FILE.name}: {len(APPROACH_WAYPOINTS)} approach, {len(RETREAT_WAYPOINTS)} retreat.")
+    except Exception as _e:
+        print(f"[Config] Warning: Failed to load {WAYPOINTS_CONFIG_FILE.name} ({_e}). Using hardcoded waypoints.")
+
+# ==============================================================================
 
 
 # def _wait_motion(controller: RebotArmEndPose, duration: float, extra: float = 0.6) -> None:

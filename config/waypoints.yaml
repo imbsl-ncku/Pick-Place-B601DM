@@ -1,0 +1,30 @@
+waypoints:
+  approach: []
+  retreat:
+  - dx: 0
+    dy: 0
+    dz: 0.1
+    duration: 2
+  - x: 0.35
+    y: 0.3
+    z: 0.18
+    roll: -0.8
+    pitch: 0
+    yaw: 1.2
+    duration: 3
+motion_parameters:
+  fixed_grasp_rpy:
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+  pregrasp:
+    enabled: true
+    dx: 0.0
+    dy: 0.0
+    dz: 0.1
+    duration: 5.0
+  grasp:
+    move_duration: 2.0
+    ready_open_m: 0.055
+    close_offset_m: 0.01
+    fixed_close_m: 0.03

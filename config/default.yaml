@@ -34,6 +34,9 @@ detection:
 robot:
   repo_root: null
   gripper:
+    ready_open_m: 0.055
+    close_offset_m: 0.01
+    fixed_close_m: 0.03
     dm:
       angle_open: 4.0
       counterclockwise: true
