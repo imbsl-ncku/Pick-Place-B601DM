@@ -53,9 +53,11 @@ ensure_rebot_sdk_in_syspath()
 try:
     from reBotArm_control_py.actuator import RebotArm
     from reBotArm_control_py.controllers import RebotArmEndPose
+    from reBotArm_control_py.kinematics import joint_to_pose
 except ImportError:
     RebotArm = None  # type: ignore
     RebotArmEndPose = None  # type: ignore
+    joint_to_pose = None  # type: ignore
 from utils.camera_utils import (
     compose_cam_to_base_transform,
     hand_eye_compensation_matrix,
@@ -285,7 +287,19 @@ def _resolve_waypoint_pose(
     grasp_xyz: tuple[float, float, float],
     default_rpy: dict[str, float],
 ) -> tuple[float, float, float, float, float, float, float]:
-    """Resolve a waypoint dict (relative dx/dy/dz or absolute x/y/z) to (x, y, z, r, p, y, duration)."""
+    """Resolve a waypoint dict (relative dx/dy/dz, absolute x/y/z, or joint angles) to (x, y, z, r, p, y, duration)."""
+    duration = float(wp.get("duration", 2.0))
+
+    if "joints" in wp and wp["joints"] is not None:
+        q_joints = np.asarray(wp["joints"], dtype=np.float64)
+        if joint_to_pose is not None:
+            try:
+                pos, rpy = joint_to_pose(q_joints)
+                return float(pos[0]), float(pos[1]), float(pos[2]), float(rpy[0]), float(rpy[1]), float(rpy[2]), duration
+            except Exception as e:
+                print(f"[Waypoint] Warning: Failed to compute FK for joint waypoint ({e}). Falling back to Cartesian fields.")
+        return float(wp.get("x", 0.35)), float(wp.get("y", 0.0)), float(wp.get("z", 0.28)), float(default_rpy.get("roll", 0.0)), float(default_rpy.get("pitch", 0.0)), float(default_rpy.get("yaw", 0.0)), duration
+
     xg, yg, zg = grasp_xyz
     if any(k in wp for k in ("dx", "dy", "dz")):
         x = xg + float(wp.get("dx", 0.0))
@@ -296,10 +310,9 @@ def _resolve_waypoint_pose(
         y = float(wp.get("y", yg))
         z = float(wp.get("z", zg))
 
-    roll = float(wp.get("roll", default_rpy["roll"]))
-    pitch = float(wp.get("pitch", default_rpy["pitch"]))
-    yaw = float(wp.get("yaw", default_rpy["yaw"]))
-    duration = float(wp.get("duration", 2.0))
+    roll = float(wp.get("roll", default_rpy.get("roll", 0.0)))
+    pitch = float(wp.get("pitch", default_rpy.get("pitch", 0.0)))
+    yaw = float(wp.get("yaw", default_rpy.get("yaw", 0.0)))
     return x, y, z, roll, pitch, yaw, duration
 
 

@@ -99,12 +99,71 @@ The dashboard has 4 tabs at the top:
    - Configure camera focus, table height, pre-grasp clearances, **grasp Z offset/depth** (e.g. `-0.020m` to plunge deeper onto the tube body without shifting horizontal X/Y), ready pose coordinates, and **gripper width parameters** (Ready Open Width `0.055m`, Fixed Close Width `0.030m`, and Close Offset Margin `0.010m`).
    - Includes an instant **"Test Gripper Width Now"** tool to verify jaw motion on hardware.
    - Saves directly to `config/default.yaml` and synchronizes automatically on disk.
-4. **User Guide**:
+4. **Teach & Record**:
+   - Manual teach mode with Pinocchio gravity compensation (\(\tau_g = g(q)\)) and real-time reverse kinematics.
+   - Allows an operator to guide the arm by hand and capture waypoints in Cartesian (`XYZ RPY`) or Joint Angle (`J1-J6`) formats.
+5. **User Guide**:
    - An on-screen version of this guide accessible at any time with one click!
 
 ---
 
-## 6. 🚨 Troubleshooting & Safety FAQ
+## 6. 🦾 Teach & Record: Hand-Guided Teaching & Reverse IK
+
+In addition to typing numbers into configuration files, you can teach the robot new waypoints by physically moving the arm by hand using the **Teach & Record** tab (Tab 5).
+
+### Side-by-Side Layout
+
+The Teach tab is organized into two adjacent boards:
+
+```
++--------------------------------------------------+-------------------------------------------------+
+|  [ LEFT BOARD: Teach Controls & Live Telemetry ] |  [ RIGHT BOARD: Recorded Waypoints Board ]      |
+|                                                  |                                                 |
+|  - Start / Stop Teach Mode (Gravity Comp)        |  - Review captured poses before saving          |
+|  - Slide Mode Selector (XYZ RPY vs Joint Angles) |  - [XYZ RPY] or [JOINTS] format badge           |
+|  - Live Reactive Telemetry HUD                   |  - Individual [Discard] button per item         |
+|  - Duration & Gripper Snapshot Inputs            |  - Export to Approach / Retreat / Ready Pose    |
+|  - [Record Current Pose] Button                  |  - [Discard All]                                |
++--------------------------------------------------+-------------------------------------------------+
+```
+
+### Step-by-Step Teaching Walkthrough
+
+1. **Activate Teach Mode**:
+   - Click the amber **"Start Teach Mode (Gravity Compensation)"** button.
+   - The robot enters compliant MIT floating mode with Pinocchio gravity feedforward (\(\tau_g = g(q)\)).
+   - The status badge turns green (`TEACH MODE ACTIVE (FLOATING)`). The arm is now weightless and will hold any position you guide it to without sagging or dropping.
+
+2. **Choose Your Desired Recording Format**:
+   - Use the **Slide Mode Selector** to toggle between:
+     - **Cartesian Mode (XYZ RPY)**: Captures spatial position in meters \((X, Y, Z)\) and orientation in radians/degrees \((Roll, Pitch, Yaw)\).
+     - **Joint Angles Mode (J1–J6)**: Captures 6-axis joint angles in radians/degrees \((J_1 \dots J_6)\).
+   - The Live Telemetry HUD updates dynamically to display the chosen format with high contrast.
+
+3. **Guide the Arm & Capture Waypoints**:
+   - Gently move the gripper to your desired waypoint (e.g. above an offloading rack or discard bin).
+   - Set the expected **Trajectory Duration** (default `2.0s`) and **Gripper State** (`Keep Current`, `Open`, or `Close`).
+   - Click **"Record Current Pose"**.
+   - The pose is instantly added to the **Recorded Waypoints Board** on the right side with its format badge (`[XYZ RPY]` or `[JOINTS]`).
+
+4. **Inspect & Filter Staged Points (Keep or Discard)**:
+   - Examine each recorded card on the right-side board.
+   - If a pose was captured poorly or is redundant, click **"Discard"** on that specific card. Poses left on the board are kept.
+   - If you want to start over, click **"Discard All"**.
+
+5. **Export Kept Poses into the Robot Workflow**:
+   - Click **"Add to Approach Waypoints"** to insert the points before grasping.
+   - Click **"Add to Retreat Waypoints"** to insert the points after grasping.
+   - Click **"Set as Ready Pose"** to update the default scanning height in `config/default.yaml`.
+   - The execution engine natively executes both Cartesian and Joint waypoints via verified sub-micron Forward Kinematics.
+
+6. **Safe Deactivation**:
+   - Click **"Stop Teach Mode & Safe Home"**.
+   - The arm automatically and smoothly computes a minimum-jerk trajectory back to the zero Safe Home pose before stiffening, ensuring safe transition without sudden shifts or drops.
+
+---
+
+## 7. 🚨 Troubleshooting & Safety FAQ
 
 ### Q: Why didn't the robot move when I started the server?
 **A:** This is an intentional safety feature! On startup, the system powers on holding torque so the arm does not sag, but it **never moves automatically**. You must click **"Ready Pose"** when you are ready.

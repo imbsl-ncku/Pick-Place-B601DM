@@ -56,9 +56,23 @@ ensure_rebot_sdk_in_syspath()
 try:
     from reBotArm_control_py.actuator import RebotArm
     from reBotArm_control_py.controllers import RebotArmEndPose
+    from reBotArm_control_py.controllers.gravity_compensation import GravityCompensation
+    from reBotArm_control_py.kinematics import (
+        joint_to_pose,
+        load_robot_model,
+        compute_fk,
+        pad_q_for_model,
+        get_end_effector_frame_id,
+    )
 except ImportError:
     RebotArm = None  # type: ignore
     RebotArmEndPose = None  # type: ignore
+    GravityCompensation = None  # type: ignore
+    joint_to_pose = None  # type: ignore
+    load_robot_model = None  # type: ignore
+    compute_fk = None  # type: ignore
+    pad_q_for_model = None  # type: ignore
+    get_end_effector_frame_id = None  # type: ignore
 
 from utils.camera_utils import (
     compose_cam_to_base_transform,
@@ -244,6 +258,19 @@ def _resolve_waypoint_pose(
     grasp_xyz: tuple[float, float, float],
     default_rpy: dict[str, float],
 ) -> tuple[float, float, float, float, float, float, float]:
+    """Resolve a waypoint dict (relative dx/dy/dz, absolute x/y/z, or joint angles) to (x, y, z, r, p, y, duration)."""
+    duration = float(wp.get("duration", 2.0))
+
+    if "joints" in wp and wp["joints"] is not None:
+        q_joints = np.asarray(wp["joints"], dtype=np.float64)
+        if joint_to_pose is not None:
+            try:
+                pos, rpy = joint_to_pose(q_joints)
+                return float(pos[0]), float(pos[1]), float(pos[2]), float(rpy[0]), float(rpy[1]), float(rpy[2]), duration
+            except Exception:
+                pass
+        return float(wp.get("x", 0.35)), float(wp.get("y", 0.0)), float(wp.get("z", 0.28)), float(default_rpy.get("roll", 0.0)), float(default_rpy.get("pitch", 0.0)), float(default_rpy.get("yaw", 0.0)), duration
+
     gx, gy, gz = grasp_xyz
     if "x" in wp or "y" in wp or "z" in wp:
         x = float(wp.get("x", gx))
@@ -257,7 +284,6 @@ def _resolve_waypoint_pose(
     roll = float(wp.get("roll", default_rpy.get("roll", 0.0)))
     pitch = float(wp.get("pitch", default_rpy.get("pitch", 0.0)))
     yaw = float(wp.get("yaw", default_rpy.get("yaw", 0.0)))
-    duration = float(wp.get("duration", 2.0))
     return x, y, z, roll, pitch, yaw, duration
 
 
@@ -279,6 +305,76 @@ def _handle_waypoint_gripper(
             grasp_driver.open_gripper(distance_m=open_width)
         elif cmd == "close":
             grasp_driver.open_gripper(distance_m=0.0)
+
+
+def _get_live_arm_pose(state: Any) -> dict[str, Any]:
+    """Reads live joint angles and computes end-effector Cartesian pose via Forward Kinematics."""
+    dry_run = getattr(state, "dry_run", True)
+    arm = getattr(state, "arm", None)
+    grasp_driver = getattr(state, "grasp_driver", None)
+
+    if dry_run or arm is None:
+        # Dry run simulation: generate a gentle floating motion around nominal pose
+        t = time.time() - getattr(state, "sim_teach_start_time", 0.0)
+        q = np.array([
+            0.00 + 0.15 * np.sin(0.4 * t),
+            -0.65 + 0.10 * np.cos(0.3 * t),
+            -0.85 + 0.12 * np.sin(0.35 * t),
+            0.00 + 0.08 * np.cos(0.5 * t),
+            0.45 + 0.10 * np.sin(0.25 * t),
+            0.00 + 0.20 * np.cos(0.4 * t),
+        ], dtype=np.float64)
+    else:
+        try:
+            if hasattr(arm, "arm") and hasattr(arm.arm, "get_positions"):
+                q_raw = arm.arm.get_positions(request_feedback=False)
+                q = np.asarray(q_raw[:6], dtype=np.float64)
+            elif grasp_driver is not None and hasattr(grasp_driver, "_arm"):
+                q_raw = grasp_driver._arm.get_state(request_feedback=False)[0]
+                q = np.asarray(q_raw[:6], dtype=np.float64)
+            else:
+                q = np.zeros(6, dtype=np.float64)
+        except Exception:
+            q = np.zeros(6, dtype=np.float64)
+
+    # Compute FK
+    pos = np.array([0.35, 0.0, 0.28])
+    rpy = np.array([0.0, 0.60, 0.0])
+    if joint_to_pose is not None:
+        try:
+            pos, rpy = joint_to_pose(q)
+        except Exception:
+            pass
+
+    # Read gripper width
+    gripper_width_m = 0.055
+    if not dry_run and grasp_driver is not None:
+        try:
+            pos_m, _, _ = grasp_driver.get_gripper_state()
+            gripper_width_m = float(pos_m)
+        except Exception:
+            pass
+    elif hasattr(state, "gripper_ready_open_m") and state.gripper_ready_open_m is not None:
+        gripper_width_m = float(state.gripper_ready_open_m)
+
+    return {
+        "active": getattr(state, "teach_mode_active", False),
+        "joints": [round(float(v), 4) for v in q],
+        "joints_deg": [round(float(np.degrees(v)), 2) for v in q],
+        "cartesian": {
+            "x": round(float(pos[0]), 4),
+            "y": round(float(pos[1]), 4),
+            "z": round(float(pos[2]), 4),
+            "roll": round(float(rpy[0]), 4),
+            "pitch": round(float(rpy[1]), 4),
+            "yaw": round(float(rpy[2]), 4),
+            "roll_deg": round(float(np.degrees(rpy[0])), 2),
+            "pitch_deg": round(float(np.degrees(rpy[1])), 2),
+            "yaw_deg": round(float(np.degrees(rpy[2])), 2),
+        },
+        "gripper_width_m": round(float(gripper_width_m), 4),
+        "gripper_width_cm": round(float(gripper_width_m * 100.0), 2),
+    }
 
 
 # ==============================================================================
@@ -367,6 +463,12 @@ class SystemState:
         self.gripper_ready_open_m: float = GRIPPER_READY_OPEN_M
         self.gripper_close_offset_m: float = GRIPPER_CLOSE_OFFSET_M
         self.gripper_fixed_close_m: Optional[float] = GRIPPER_FIXED_CLOSE_M
+
+        # Teach & Record Mode state
+        self.teach_mode_active: bool = False
+        self.gravity_controller: Optional[Any] = None
+        self.staged_waypoints: list[dict[str, Any]] = []
+        self.sim_teach_start_time: float = time.time()
 
         # Activity log & Error telemetry
         self.logs: collections.deque[LogEntry] = collections.deque(maxlen=500)
@@ -1127,6 +1229,10 @@ class RobotWorker(threading.Thread):
                         self._execute_safe_home()
                     elif action == "ready_pose":
                         self._execute_ready_pose()
+                    elif action == "start_teach_mode":
+                        self._execute_start_teach_mode()
+                    elif action == "stop_teach_mode":
+                        self._execute_stop_teach_mode()
                     elif action == "resume":
                         self.state.pause_event.set()
                     elif action == "unfreeze":
@@ -1591,6 +1697,75 @@ class RobotWorker(threading.Thread):
             time.sleep(0.2)
             self.state.log_success(f"[Dry Run] Gripper width set to {width * 100:.1f} cm ({width:.3f} m).")
 
+    def _execute_start_teach_mode(self) -> None:
+        with self.state.lock:
+            if self.state.teach_mode_active:
+                return
+            dry = self.state.dry_run or self.state.arm is None
+            arm = self.state.arm
+            ctrl = self.state.controller
+
+        self.state.log("[TEACH] Activating Gravity Compensation / Teach Mode...")
+        if not dry and arm is not None:
+            try:
+                if ctrl is not None and getattr(ctrl, "_running", False):
+                    if hasattr(ctrl, "rebotarm") and hasattr(ctrl.rebotarm, "stop_control_loop"):
+                        ctrl.rebotarm.stop_control_loop()
+
+                if GravityCompensation is not None:
+                    gc = GravityCompensation(arm)
+                    gc.start()
+                    with self.state.lock:
+                        self.state.gravity_controller = gc
+                else:
+                    self.state.log_warning("[TEACH] GravityCompensation module not found. Falling back to compliant MIT mode.")
+                    arm.arm.mode_mit(kp=2.0, kd=1.0)
+                    arm.arm.enable()
+            except Exception as e:
+                self.state.log_error(f"[TEACH] Failed to activate gravity compensation: {e}", exc=e, source="TeachMode")
+                return
+
+        with self.state.lock:
+            self.state.teach_mode_active = True
+            self.state.sim_teach_start_time = time.time()
+            self.state.status_detail = "Teach Mode Active (Arm Floating)"
+        self.state.log_success("[TEACH] Gravity compensation active. You can now move the arm by hand.")
+
+    def _execute_stop_teach_mode(self) -> None:
+        with self.state.lock:
+            if not self.state.teach_mode_active:
+                return
+            dry = self.state.dry_run or self.state.arm is None
+            arm = self.state.arm
+            gc = self.state.gravity_controller
+            ctrl = self.state.controller
+
+        self.state.log("[TEACH] Deactivating Teach Mode. Returning arm safely to Home...")
+        if not dry and arm is not None:
+            try:
+                if gc is not None and getattr(gc, "_running", False):
+                    gc.end()
+                with self.state.lock:
+                    self.state.gravity_controller = None
+
+                if ctrl is not None:
+                    if not getattr(ctrl, "_running", False):
+                        ctrl.start()
+                    if hasattr(ctrl, "safe_home"):
+                        self.state.log("[TEACH] Executing Safe Home trajectory...")
+                        ctrl.safe_home()
+            except Exception as e:
+                self.state.log_error(f"[TEACH] Error during teach mode deactivation/homing: {e}", exc=e, source="TeachMode")
+        else:
+            time.sleep(0.2)
+            self.state.log_success("[TEACH] [Dry Run] Arm smoothly returned to Safe Home.")
+
+        with self.state.lock:
+            self.state.teach_mode_active = False
+            self.state.status = "live"
+            self.state.status_detail = "Live Camera Preview"
+        self.state.log_success("[TEACH] Teach Mode deactivated. Arm safely homed.")
+
 
 # ==============================================================================
 # TORNADO HTTP & API HANDLERS
@@ -1926,6 +2101,173 @@ class ConfigApiHandler(tornado.web.RequestHandler):
                 state.save_waypoints_to_disk()
                 self.write(json.dumps({"success": True, "message": "Configuration saved successfully."}))
         except Exception as e:
+            self.set_status(500)
+            self.write(json.dumps({"error": str(e)}))
+
+
+class TeachApiHandler(tornado.web.RequestHandler):
+    """Endpoints for live arm pose telemetry, gravity compensation mode toggle, and waypoint staging/committing."""
+
+    def get(self) -> None:
+        state: SystemState = self.application.settings["system_state"]
+        pose_info = _get_live_arm_pose(state)
+        with state.lock:
+            pose_info["staged_waypoints"] = copy.deepcopy(state.staged_waypoints)
+            pose_info["staged_count"] = len(state.staged_waypoints)
+        self.set_header("Content-Type", "application/json")
+        self.write(json.dumps(pose_info))
+
+    def post(self) -> None:
+        state: SystemState = self.application.settings["system_state"]
+        robot_worker: RobotWorker = self.application.settings["robot_worker"]
+        try:
+            body = json.loads(self.request.body or "{}")
+            action = body.get("action", "")
+
+            if action == "start":
+                robot_worker.submit("start_teach_mode")
+                self.write(json.dumps({"success": True, "message": "Starting Teach Mode (Gravity Compensation)..."}))
+                return
+
+            if action == "stop":
+                robot_worker.submit("stop_teach_mode")
+                self.write(json.dumps({"success": True, "message": "Stopping Teach Mode and homing safely..."}))
+                return
+
+            if action == "stage_add":
+                mode = body.get("mode", "cartesian")
+                duration = float(body.get("duration", 2.0))
+                gripper = body.get("gripper", "keep")
+                live = _get_live_arm_pose(state)
+
+                with state.lock:
+                    if mode == "joints":
+                        staged_item = {
+                            "mode": "joints",
+                            "joints": [float(v) for v in live["joints"]],
+                            "joints_deg": [float(v) for v in live["joints_deg"]],
+                            "duration": duration,
+                            "gripper": gripper,
+                            "cartesian_ref": dict(live["cartesian"]),
+                        }
+                    else:
+                        staged_item = {
+                            "mode": "cartesian",
+                            "x": float(live["cartesian"]["x"]),
+                            "y": float(live["cartesian"]["y"]),
+                            "z": float(live["cartesian"]["z"]),
+                            "roll": float(live["cartesian"]["roll"]),
+                            "pitch": float(live["cartesian"]["pitch"]),
+                            "yaw": float(live["cartesian"]["yaw"]),
+                            "duration": duration,
+                            "gripper": gripper,
+                            "joints_ref": [float(v) for v in live["joints_deg"]],
+                        }
+                    state.staged_waypoints.append(staged_item)
+                    count = len(state.staged_waypoints)
+                state.log(f"[TEACH] Recorded waypoint #{count} in [{mode.upper()}] mode.")
+                self.write(json.dumps({
+                    "success": True,
+                    "staged_waypoints": state.staged_waypoints,
+                    "count": count,
+                }))
+                return
+
+            if action == "stage_discard":
+                index = int(body.get("index", -1))
+                with state.lock:
+                    if 0 <= index < len(state.staged_waypoints):
+                        removed = state.staged_waypoints.pop(index)
+                        state.log(f"[TEACH] Discarded staged waypoint #{index + 1} ({removed.get('mode', 'cartesian')}).")
+                    count = len(state.staged_waypoints)
+                self.write(json.dumps({
+                    "success": True,
+                    "staged_waypoints": state.staged_waypoints,
+                    "count": count,
+                }))
+                return
+
+            if action == "stage_clear":
+                with state.lock:
+                    state.staged_waypoints.clear()
+                state.log("[TEACH] Cleared all staged waypoints.")
+                self.write(json.dumps({
+                    "success": True,
+                    "staged_waypoints": [],
+                    "count": 0,
+                }))
+                return
+
+            if action == "commit":
+                target = body.get("target", "retreat")
+                with state.lock:
+                    if not state.staged_waypoints:
+                        self.set_status(400)
+                        self.write(json.dumps({"success": False, "error": "No staged waypoints to commit."}))
+                        return
+
+                    items_to_commit = []
+                    for sw in state.staged_waypoints:
+                        wp_entry = {}
+                        if sw.get("mode") == "joints":
+                            wp_entry["joints"] = [round(float(v), 4) for v in sw["joints"]]
+                        else:
+                            wp_entry["x"] = round(float(sw["x"]), 4)
+                            wp_entry["y"] = round(float(sw["y"]), 4)
+                            wp_entry["z"] = round(float(sw["z"]), 4)
+                            wp_entry["roll"] = round(float(sw.get("roll", 0.0)), 4)
+                            wp_entry["pitch"] = round(float(sw.get("pitch", 0.0)), 4)
+                            wp_entry["yaw"] = round(float(sw.get("yaw", 0.0)), 4)
+                        wp_entry["duration"] = round(float(sw.get("duration", 2.0)), 2)
+                        if sw.get("gripper") and sw["gripper"] != "keep":
+                            wp_entry["gripper"] = sw["gripper"]
+                        items_to_commit.append(wp_entry)
+
+                    if target == "approach":
+                        state.approach_waypoints.extend(items_to_commit)
+                        state.save_waypoints_to_disk()
+                        state.log_success(f"[TEACH] Added {len(items_to_commit)} waypoint(s) to Approach sequence.")
+                    elif target == "retreat":
+                        state.retreat_waypoints.extend(items_to_commit)
+                        state.save_waypoints_to_disk()
+                        state.log_success(f"[TEACH] Added {len(items_to_commit)} waypoint(s) to Retreat sequence.")
+                    elif target == "ready_pose":
+                        last_item = state.staged_waypoints[-1]
+                        if last_item.get("mode") == "joints":
+                            pos = np.array([0.35, 0.0, 0.28])
+                            rpy = np.array([0.0, 0.60, 0.0])
+                            if joint_to_pose is not None:
+                                try:
+                                    pos, rpy = joint_to_pose(np.array(last_item["joints"]))
+                                except Exception:
+                                    pass
+                            rx, ry, rz = pos
+                            rr, rp, ryaw = rpy
+                        else:
+                            rx, ry, rz = last_item["x"], last_item["y"], last_item["z"]
+                            rr, rp, ryaw = last_item["roll"], last_item["pitch"], last_item["yaw"]
+
+                        if "robot" not in state.cfg:
+                            state.cfg["robot"] = {}
+                        state.cfg["robot"]["ready_pose"] = {
+                            "x": round(float(rx), 4),
+                            "y": round(float(ry), 4),
+                            "z": round(float(rz), 4),
+                            "roll": round(float(rr), 4),
+                            "pitch": round(float(rp), 4),
+                            "yaw": round(float(ryaw), 4),
+                        }
+                        with open(state.cfg_path, "w", encoding="utf-8") as f:
+                            yaml.dump(state.cfg, f, default_flow_style=False, sort_keys=False)
+                        state.log_success(f"[TEACH] Ready Pose updated in {state.cfg_path.name}: ({rx:.3f}, {ry:.3f}, {rz:.3f})")
+
+                self.write(json.dumps({"success": True, "message": f"Successfully exported to {target}."}))
+                return
+
+            self.set_status(400)
+            self.write(json.dumps({"error": f"Unknown action: {action}"}))
+        except Exception as e:
+            state.log_error(f"Teach API error: {e}", exc=e, source="TeachAPI")
             self.set_status(500)
             self.write(json.dumps({"error": str(e)}))
 
@@ -2634,6 +2976,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn active" onclick="switchTab('station')">Visual Grasping</button>
       <button class="tab-btn" onclick="switchTab('waypoints')">Waypoints Editor</button>
       <button class="tab-btn" onclick="switchTab('config')">Robot & Camera Config</button>
+      <button class="tab-btn" onclick="switchTab('teach')">Teach &amp; Record</button>
       <button class="tab-btn" onclick="switchTab('guide')">User Guide</button>
     </div>
 
@@ -3097,6 +3440,202 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- TAB: TEACH & RECORD (MANUAL ARM TEACHING & GRAVITY COMPENSATION) -->
+    <div id="tab-teach" class="tab-content">
+      <div style="display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; align-items: start;">
+        
+        <!-- LEFT BOARD: Teach Controls & Live Telemetry -->
+        <div class="card" style="margin-bottom: 0;">
+          <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>TEACH CONTROLS &amp; LIVE TELEMETRY</span>
+            <span id="teach-status-badge" class="status-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid #475569;">TEACH MODE INACTIVE</span>
+          </div>
+
+          <!-- Master Toggle & Safety Alert -->
+          <div style="margin-bottom: 16px;">
+            <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 8px;">
+              <button id="btn-teach-toggle" class="btn" style="background: #f59e0b; color: #000; font-weight: 700; padding: 10px 18px; border-radius: 6px; cursor: pointer; border: none; font-size: 0.95rem;" onclick="toggleTeachMode()">
+                Start Teach Mode (Gravity Compensation)
+              </button>
+            </div>
+            <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 8px 12px; font-size: 0.8rem; color: #fde68a; border-radius: 0 4px 4px 0;">
+              <strong>Manual Hand Guidance</strong>: When Teach Mode is active, the motors enter compliant floating mode with gravity feedforward (tau = g(q)). Move the arm smoothly by hand to your target pose. Stopping Teach Mode automatically executes Safe Home.
+            </div>
+          </div>
+
+          <!-- Slide Mode Selector (Segmented Toggle) -->
+          <div style="margin-bottom: 18px; background: rgba(15, 23, 42, 0.6); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; text-transform: uppercase; letter-spacing: 0.05em;">Slide Mode Selector:</span>
+              <span id="teach-mode-indicator" style="font-size: 0.8rem; color: #38bdf8; font-family: monospace; font-weight: 600;">ACTIVE: CARTESIAN (XYZ RPY)</span>
+            </div>
+            <div style="display: flex; gap: 6px; background: #0f131a; padding: 4px; border-radius: 6px; border: 1px solid #263143;">
+              <button id="btn-mode-cartesian" class="btn" style="flex: 1; padding: 8px 12px; font-size: 0.85rem; font-weight: 700; border-radius: 4px; border: none; cursor: pointer; background: #2563eb; color: #fff;" onclick="setTeachSlideMode('cartesian')">
+                Cartesian Mode (XYZ RPY)
+              </button>
+              <button id="btn-mode-joints" class="btn" style="flex: 1; padding: 8px 12px; font-size: 0.85rem; font-weight: 700; border-radius: 4px; border: none; cursor: pointer; background: transparent; color: #94a3b8;" onclick="setTeachSlideMode('joints')">
+                Joint Angles Mode (J1-J6)
+              </button>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+              Waypoints recorded will be saved in the format matching whichever mode is selected above.
+            </div>
+          </div>
+
+          <!-- Reactive Live Telemetry HUD -->
+          <div style="margin-bottom: 18px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; text-transform: uppercase;">Live Arm Telemetry</span>
+              <span id="teach-gripper-display" style="font-size: 0.8rem; color: #34d399; font-family: monospace;">Gripper: 5.5 cm</span>
+            </div>
+
+            <!-- Cartesian Telemetry Card (Shown when Cartesian mode selected) -->
+            <div id="teach-hud-cartesian" style="display: block;">
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
+                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">X POSITION</div>
+                  <div id="hud-val-x" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.3500 m</div>
+                </div>
+                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">Y POSITION</div>
+                  <div id="hud-val-y" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.0000 m</div>
+                </div>
+                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">Z POSITION</div>
+                  <div id="hud-val-z" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.2800 m</div>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">ROLL</div>
+                  <div id="hud-val-roll" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.00 rad (0.0°)</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">PITCH</div>
+                  <div id="hud-val-pitch" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.60 rad (34.4°)</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">YAW</div>
+                  <div id="hud-val-yaw" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.00 rad (0.0°)</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Joint Angles Telemetry Card (Shown when Joint mode selected) -->
+            <div id="teach-hud-joints" style="display: none;">
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 1 (BASE)</div>
+                  <div id="hud-val-j1" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j1-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 2 (SHOULDER)</div>
+                  <div id="hud-val-j2" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">-37.2°</div>
+                  <div id="hud-val-j2-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">-0.650 rad</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 3 (ELBOW)</div>
+                  <div id="hud-val-j3" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">-48.7°</div>
+                  <div id="hud-val-j3-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">-0.850 rad</div>
+                </div>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 4 (WRIST 1)</div>
+                  <div id="hud-val-j4" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j4-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 5 (WRIST 2)</div>
+                  <div id="hud-val-j5" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">25.8°</div>
+                  <div id="hud-val-j5-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.450 rad</div>
+                </div>
+                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
+                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 6 (FLANGE)</div>
+                  <div id="hud-val-j6" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j6-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Alternate Mode Preview Summary -->
+            <div id="teach-hud-alt-summary" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted); font-family: monospace; background: rgba(0,0,0,0.25); padding: 4px 8px; border-radius: 4px;">
+              Joints: [0.0°, -37.2°, -48.7°, 0.0°, 25.8°, 0.0°]
+            </div>
+          </div>
+
+          <!-- Waypoint Snapshot Controls -->
+          <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid var(--card-border); padding: 12px; border-radius: 8px;">
+            <div style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; margin-bottom: 10px; text-transform: uppercase;">
+              Capture Waypoint Snapshot
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+              <div>
+                <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px;">TRAJECTORY DURATION (SEC)</label>
+                <input type="number" id="teach-record-duration" value="2.0" step="0.1" min="0.5" max="15.0" style="width: 100%; box-sizing: border-box; background: #0f131a; border: 1px solid #263143; color: #fff; padding: 8px; border-radius: 4px; font-family: monospace;">
+              </div>
+              <div>
+                <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px;">GRIPPER STATE AT POSE</label>
+                <select id="teach-record-gripper" style="width: 100%; box-sizing: border-box; background: #0f131a; border: 1px solid #263143; color: #fff; padding: 8px; border-radius: 4px;">
+                  <option value="keep">Keep Current State</option>
+                  <option value="open">Open (Ready Open Width)</option>
+                  <option value="close">Close (Clamped)</option>
+                </select>
+              </div>
+            </div>
+            <button id="btn-record-pose" class="btn" style="width: 100%; background: #2563eb; color: #fff; font-weight: 700; padding: 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.95rem;" onclick="recordTeachPose()">
+              Record Current Pose (saves as Cartesian)
+            </button>
+          </div>
+        </div>
+
+        <!-- RIGHT BOARD: Recorded Waypoints Board (Inspection & Staging) -->
+        <div class="card" style="margin-bottom: 0;">
+          <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+            <span>RECORDED WAYPOINTS BOARD</span>
+            <span id="teach-staged-count" class="status-badge" style="background: rgba(37, 99, 235, 0.15); color: #60a5fa; border: 1px solid #2563eb;">0 STAGED</span>
+          </div>
+
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+            Points recorded during manual guidance appear below. Review each pose before committing to the robot's active waypoints. You may discard unwanted poses or keep them.
+          </div>
+
+          <!-- Staged Items List -->
+          <div id="teach-staged-container" style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; padding-right: 4px;">
+            <div id="teach-staged-empty" style="text-align: center; padding: 40px 16px; color: var(--text-muted); font-size: 0.85rem; border: 1px dashed var(--card-border); border-radius: 6px;">
+              No waypoints recorded yet.<br>Move arm to desired target pose and click "Record Current Pose".
+            </div>
+          </div>
+
+          <!-- Staging Board Export & Action Controls -->
+          <div style="border-top: 1px solid var(--card-border); padding-top: 14px;">
+            <div style="font-size: 0.8rem; font-weight: 700; color: #cbd5e1; margin-bottom: 8px; text-transform: uppercase;">
+              Export Staged Points:
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+              <button class="btn" style="background: rgba(37, 99, 235, 0.15); color: #60a5fa; border: 1px solid #2563eb; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('approach')">
+                Add to Approach Waypoints
+              </button>
+              <button class="btn" style="background: rgba(129, 140, 248, 0.15); color: #a5b4fc; border: 1px solid #818cf8; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('retreat')">
+                Add to Retreat Waypoints
+              </button>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+              <button class="btn" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('ready_pose')">
+                Set as Ready Pose
+              </button>
+              <button class="btn" style="background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid #ef4444; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="clearTeachStaging()">
+                Discard All
+              </button>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </div>
+
     <!-- TAB 4: USER GUIDE & WALKTHROUGH -->
     <div id="tab-guide" class="tab-content">
       <div class="guide-banner">
@@ -3333,8 +3872,12 @@ INDEX_HTML = """<!DOCTYPE html>
         document.querySelector('.nav-tabs .tab-btn:nth-child(3)').classList.add('active');
         document.getElementById('tab-config').classList.add('active');
         loadConfiguration();
-      } else if (tabId === 'guide') {
+      } else if (tabId === 'teach') {
         document.querySelector('.nav-tabs .tab-btn:nth-child(4)').classList.add('active');
+        document.getElementById('tab-teach').classList.add('active');
+        fetchTeachPose();
+      } else if (tabId === 'guide') {
+        document.querySelector('.nav-tabs .tab-btn:nth-child(5)').classList.add('active');
         document.getElementById('tab-guide').classList.add('active');
       }
     }
@@ -3875,16 +4418,27 @@ INDEX_HTML = """<!DOCTYPE html>
       }
 
       container.innerHTML = wps.map((wp, idx) => {
-        const isAbs = ('x' in wp || 'y' in wp || 'z' in wp);
-        const modeBadge = isAbs
-          ? `<span class="wp-badge-mode wp-badge-abs">ABS</span>`
-          : `<span class="wp-badge-mode wp-badge-rel">REL</span>`;
+        const isJoint = ('joints' in wp && Array.isArray(wp.joints));
+        const isAbs = !isJoint && ('x' in wp || 'y' in wp || 'z' in wp);
+        let modeBadge = '';
+        let posText = '';
+        let rpyText = '';
 
-        const posText = isAbs
-          ? `X: ${wp.x ?? 0}m, Y: ${wp.y ?? 0}m, Z: ${wp.z ?? 0}m`
-          : `dx: ${wp.dx ?? 0}m, dy: ${wp.dy ?? 0}m, dz: ${wp.dz ?? 0}m`;
+        if (isJoint) {
+          modeBadge = `<span class="wp-badge-mode" style="background:rgba(6,182,212,0.15);color:#22d3ee;border:1px solid rgba(6,182,212,0.4);">JOINTS</span>`;
+          const jDeg = wp.joints.map(r => (r * 180 / Math.PI).toFixed(1) + '°');
+          posText = `J: [${jDeg.join(', ')}]`;
+          rpyText = `Rad: [${wp.joints.map(r => Number(r).toFixed(3)).join(', ')}]`;
+        } else if (isAbs) {
+          modeBadge = `<span class="wp-badge-mode wp-badge-abs">ABS</span>`;
+          posText = `X: ${wp.x ?? 0}m, Y: ${wp.y ?? 0}m, Z: ${wp.z ?? 0}m`;
+          rpyText = `RPY: [${wp.roll ?? 0}, ${wp.pitch ?? 0}, ${wp.yaw ?? 0}] rad`;
+        } else {
+          modeBadge = `<span class="wp-badge-mode wp-badge-rel">REL</span>`;
+          posText = `dx: ${wp.dx ?? 0}m, dy: ${wp.dy ?? 0}m, dz: ${wp.dz ?? 0}m`;
+          rpyText = `RPY: [${wp.roll ?? 0}, ${wp.pitch ?? 0}, ${wp.yaw ?? 0}] rad`;
+        }
 
-        const rpyText = `RPY: [${wp.roll ?? 0}, ${wp.pitch ?? 0}, ${wp.yaw ?? 0}] rad`;
         const durText = `${wp.duration ?? 2.0}s`;
         const gripText = wp.gripper ? ` | Grip: ${wp.gripper}` : '';
         const pauseText = wp.pause ? ` | Pause` : '';
@@ -3892,7 +4446,7 @@ INDEX_HTML = """<!DOCTYPE html>
         return `
           <div class="wp-item-row">
             <div class="wp-item-desc">
-              <div><strong>#${idx + 1}</strong> ${modeBadge} <span style="font-family:monospace; color:#38bdf8;">${posText}</span></div>
+              <div><strong>#${idx + 1}</strong> ${modeBadge} <span style="font-family:monospace; color:${isJoint ? '#22d3ee' : '#38bdf8'};">${posText}</span></div>
               <div style="font-size:0.75rem; color:var(--text-muted);">${rpyText} | ${durText}${gripText}${pauseText}</div>
             </div>
             <button class="queue-item-remove" onclick="removeWaypoint('${type}', ${idx})" title="Remove waypoint">X</button>
@@ -4168,8 +4722,303 @@ INDEX_HTML = """<!DOCTYPE html>
       setTimeout(() => { t.style.display = 'none'; }, 2500);
     }
 
+    // --------------------------------------------------------------------------
+    // TEACH & RECORD MODE LOGIC
+    // --------------------------------------------------------------------------
+    let currentTeachMode = 'cartesian'; // 'cartesian' or 'joints'
+    let teachModeActive = false;
+
+    function setTeachSlideMode(mode) {
+      currentTeachMode = mode;
+      const btnCart = document.getElementById('btn-mode-cartesian');
+      const btnJoints = document.getElementById('btn-mode-joints');
+      const hudCart = document.getElementById('teach-hud-cartesian');
+      const hudJoints = document.getElementById('teach-hud-joints');
+      const modeInd = document.getElementById('teach-mode-indicator');
+      const recBtn = document.getElementById('btn-record-pose');
+
+      if (mode === 'cartesian') {
+        if (btnCart) { btnCart.style.background = '#2563eb'; btnCart.style.color = '#fff'; }
+        if (btnJoints) { btnJoints.style.background = 'transparent'; btnJoints.style.color = '#94a3b8'; }
+        if (hudCart) hudCart.style.display = 'block';
+        if (hudJoints) hudJoints.style.display = 'none';
+        if (modeInd) modeInd.innerText = 'ACTIVE: CARTESIAN (XYZ RPY)';
+        if (recBtn) recBtn.innerText = 'Record Current Pose (saves as Cartesian)';
+      } else {
+        if (btnCart) { btnCart.style.background = 'transparent'; btnCart.style.color = '#94a3b8'; }
+        if (btnJoints) { btnJoints.style.background = '#06b6d4'; btnJoints.style.color = '#fff'; }
+        if (hudCart) hudCart.style.display = 'none';
+        if (hudJoints) hudJoints.style.display = 'block';
+        if (modeInd) modeInd.innerText = 'ACTIVE: JOINT ANGLES (J1-J6)';
+        if (recBtn) recBtn.innerText = 'Record Current Pose (saves as Joint Angles)';
+      }
+    }
+
+    async function fetchTeachPose() {
+      try {
+        const res = await fetch('/api/teach/pose');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        teachModeActive = Boolean(data.active);
+
+        // Update status badge & toggle button
+        const badge = document.getElementById('teach-status-badge');
+        const toggleBtn = document.getElementById('btn-teach-toggle');
+        if (badge) {
+          if (teachModeActive) {
+            badge.innerText = 'TEACH MODE ACTIVE (FLOATING)';
+            badge.style.background = 'rgba(16, 185, 129, 0.2)';
+            badge.style.color = '#34d399';
+            badge.style.borderColor = '#10b981';
+          } else {
+            badge.innerText = 'TEACH MODE INACTIVE';
+            badge.style.background = 'rgba(148, 163, 184, 0.15)';
+            badge.style.color = '#94a3b8';
+            badge.style.borderColor = '#475569';
+          }
+        }
+
+        if (toggleBtn) {
+          if (teachModeActive) {
+            toggleBtn.innerText = 'Stop Teach Mode & Safe Home';
+            toggleBtn.style.background = '#10b981';
+            toggleBtn.style.color = '#fff';
+          } else {
+            toggleBtn.innerText = 'Start Teach Mode (Gravity Compensation)';
+            toggleBtn.style.background = '#f59e0b';
+            toggleBtn.style.color = '#000';
+          }
+        }
+
+        // Update Cartesian HUD
+        if (data.cartesian) {
+          const c = data.cartesian;
+          const setT = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+          setT('hud-val-x', (c.x >= 0 ? '+' : '') + Number(c.x).toFixed(4) + ' m');
+          setT('hud-val-y', (c.y >= 0 ? '+' : '') + Number(c.y).toFixed(4) + ' m');
+          setT('hud-val-z', (c.z >= 0 ? '+' : '') + Number(c.z).toFixed(4) + ' m');
+          setT('hud-val-roll', `${Number(c.roll).toFixed(2)} rad (${Number(c.roll_deg).toFixed(1)}°)`);
+          setT('hud-val-pitch', `${Number(c.pitch).toFixed(2)} rad (${Number(c.pitch_deg).toFixed(1)}°)`);
+          setT('hud-val-yaw', `${Number(c.yaw).toFixed(2)} rad (${Number(c.yaw_deg).toFixed(1)}°)`);
+        }
+
+        // Update Joints HUD
+        if (data.joints && data.joints_deg) {
+          const jDeg = data.joints_deg;
+          const jRad = data.joints;
+          for (let i = 0; i < 6; i++) {
+            const elDeg = document.getElementById(`hud-val-j${i+1}`);
+            const elRad = document.getElementById(`hud-val-j${i+1}-rad`);
+            if (elDeg) elDeg.innerText = `${Number(jDeg[i]).toFixed(1)}°`;
+            if (elRad) elRad.innerText = `${Number(jRad[i]).toFixed(3)} rad`;
+          }
+        }
+
+        // Update Gripper Display
+        const gripEl = document.getElementById('teach-gripper-display');
+        if (gripEl && data.gripper_width_cm !== undefined) {
+          gripEl.innerText = `Gripper: ${data.gripper_width_cm} cm`;
+        }
+
+        // Update Alternate Mode Summary
+        const altSum = document.getElementById('teach-hud-alt-summary');
+        if (altSum) {
+          if (currentTeachMode === 'cartesian') {
+            const degs = (data.joints_deg || []).map(d => Number(d).toFixed(1) + '°');
+            altSum.innerText = `Joints: [${degs.join(', ')}]`;
+          } else if (data.cartesian) {
+            const c = data.cartesian;
+            altSum.innerText = `Cartesian: X:${c.x.toFixed(3)}m Y:${c.y.toFixed(3)}m Z:${c.z.toFixed(3)}m | Pitch:${c.pitch_deg.toFixed(1)}°`;
+          }
+        }
+
+        // Render Staged Waypoints Board
+        renderTeachStagedWaypoints(data.staged_waypoints || []);
+      } catch (err) {
+        // silent catch on network glitch
+      }
+    }
+
+    let lastRenderedStagedJson = null;
+    function renderTeachStagedWaypoints(staged, force = false) {
+      const container = document.getElementById('teach-staged-container');
+      const countBadge = document.getElementById('teach-staged-count');
+      if (!container) return;
+
+      const stagedList = staged || [];
+      const stagedJson = JSON.stringify(stagedList);
+      if (!force && stagedJson === lastRenderedStagedJson) return;
+      lastRenderedStagedJson = stagedJson;
+
+      if (countBadge) {
+        countBadge.innerText = `${stagedList.length} STAGED`;
+      }
+
+      if (stagedList.length === 0) {
+        container.innerHTML = `
+          <div style="text-align: center; padding: 40px 16px; color: var(--text-muted); font-size: 0.85rem; border: 1px dashed var(--card-border); border-radius: 6px;">
+            No waypoints recorded yet.<br>Move arm to desired target pose and click "Record Current Pose".
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = stagedList.map((wp, idx) => {
+        const isJoint = wp.mode === 'joints';
+        const badge = isJoint
+          ? `<span class="wp-badge-mode" style="background:rgba(6,182,212,0.15);color:#22d3ee;border:1px solid rgba(6,182,212,0.4);">JOINTS</span>`
+          : `<span class="wp-badge-mode wp-badge-abs">XYZ RPY</span>`;
+
+        let mainCoord = '';
+        let subCoord = '';
+
+        if (isJoint) {
+          const jDeg = (wp.joints_deg || []).map(d => Number(d).toFixed(1) + '°');
+          mainCoord = `J: [${jDeg.join(', ')}]`;
+          subCoord = `Rad: [${(wp.joints || []).map(r => Number(r).toFixed(3)).join(', ')}]`;
+        } else {
+          mainCoord = `X: ${Number(wp.x).toFixed(3)}m, Y: ${Number(wp.y).toFixed(3)}m, Z: ${Number(wp.z).toFixed(3)}m`;
+          const rDeg = (Number(wp.roll) * 180 / Math.PI).toFixed(1);
+          const pDeg = (Number(wp.pitch) * 180 / Math.PI).toFixed(1);
+          const yDeg = (Number(wp.yaw) * 180 / Math.PI).toFixed(1);
+          subCoord = `RPY: [${rDeg}°, ${pDeg}°, ${yDeg}°] (${Number(wp.roll).toFixed(2)}, ${Number(wp.pitch).toFixed(2)}, ${Number(wp.yaw).toFixed(2)} rad)`;
+        }
+
+        const dur = wp.duration ?? 2.0;
+        const grip = wp.gripper ?? 'keep';
+
+        return `
+          <div style="background: #0f131a; border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <strong style="color: #cbd5e1; font-size: 0.9rem;">#${idx + 1}</strong>
+                ${badge}
+              </div>
+              <button class="queue-item-remove" style="padding: 4px 12px; font-size: 0.8rem; font-weight: 700; border-radius: 4px; background: rgba(239,68,68,0.18); color: #f87171; border: 1px solid #ef4444; cursor: pointer;" onclick="discardTeachPose(${idx})" title="Discard this pose">Discard</button>
+            </div>
+            <div style="font-family: monospace; font-size: 0.85rem; color: ${isJoint ? '#22d3ee' : '#38bdf8'}; font-weight: 600; margin-bottom: 4px;">
+              ${mainCoord}
+            </div>
+            <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 6px;">
+              ${subCoord}
+            </div>
+            <div style="font-size: 0.75rem; color: #64748b; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 4px;">
+              Duration: <span style="color: #cbd5e1; font-family: monospace;">${dur}s</span> | Gripper: <span style="color: #cbd5e1; font-family: monospace;">${grip}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function toggleTeachMode() {
+      try {
+        const action = teachModeActive ? 'stop' : 'start';
+        const res = await fetch('/api/teach/mode', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: action}),
+        });
+        const data = await res.json();
+        if (data.message) showToast(data.message);
+        setTimeout(fetchTeachPose, 300);
+      } catch (err) {
+        showToast('Error toggling teach mode');
+      }
+    }
+
+    async function recordTeachPose() {
+      try {
+        const durInput = document.getElementById('teach-record-duration');
+        const gripSelect = document.getElementById('teach-record-gripper');
+        const duration = parseFloat(durInput ? durInput.value : '2.0') || 2.0;
+        const gripper = gripSelect ? gripSelect.value : 'keep';
+
+        const res = await fetch('/api/teach/stage', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            action: 'stage_add',
+            mode: currentTeachMode,
+            duration: duration,
+            gripper: gripper,
+          }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Recorded Pose #${data.count} as [${currentTeachMode.toUpperCase()}]`);
+          renderTeachStagedWaypoints(data.staged_waypoints || [], true);
+        }
+      } catch (err) {
+        showToast('Error recording pose');
+      }
+    }
+
+    async function discardTeachPose(idx) {
+      try {
+        const res = await fetch('/api/teach/stage', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: 'stage_discard', index: idx}),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Discarded pose #${idx + 1}`);
+          renderTeachStagedWaypoints(data.staged_waypoints || [], true);
+        }
+      } catch (err) {
+        showToast('Error discarding pose');
+      }
+    }
+
+    async function clearTeachStaging() {
+      if (!confirm('Are you sure you want to discard all staged waypoints?')) return;
+      try {
+        const res = await fetch('/api/teach/stage', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: 'stage_clear'}),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('All staged poses cleared');
+          renderTeachStagedWaypoints([], true);
+        }
+      } catch (err) {
+        showToast('Error clearing staging');
+      }
+    }
+
+    async function commitTeachWaypoints(target) {
+      try {
+        const res = await fetch('/api/teach/commit', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: 'commit', target: target}),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.message || `Exported to ${target}!`);
+          loadWaypoints();
+          if (target === 'ready_pose') {
+            loadConfiguration();
+          }
+        } else {
+          showToast(data.error || 'Failed to export');
+        }
+      } catch (err) {
+        showToast('Error committing waypoints');
+      }
+    }
+
     // Auto-poll state every 200ms
     setInterval(updateState, 200);
+    setInterval(() => {
+      const teachTab = document.getElementById('tab-teach');
+      if (teachTab && teachTab.classList.contains('active')) {
+        fetchTeachPose();
+      }
+    }, 200);
     updateState();
     loadWaypoints();
     loadConfiguration().then(() => {
@@ -4178,7 +5027,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
     try {
       const savedTab = sessionStorage.getItem('active_tab');
-      if (savedTab && ['station', 'waypoints', 'config', 'guide'].includes(savedTab)) {
+      if (savedTab && ['station', 'waypoints', 'config', 'teach', 'guide'].includes(savedTab)) {
         switchTab(savedTab);
       }
     } catch(e) {}
@@ -4210,6 +5059,11 @@ def make_app(state: SystemState, robot_worker: RobotWorker) -> tornado.web.Appli
             (r"/api/action", ActionApiHandler),
             (r"/api/waypoints", WaypointsApiHandler),
             (r"/api/config", ConfigApiHandler),
+            (r"/api/teach", TeachApiHandler),
+            (r"/api/teach/pose", TeachApiHandler),
+            (r"/api/teach/mode", TeachApiHandler),
+            (r"/api/teach/stage", TeachApiHandler),
+            (r"/api/teach/commit", TeachApiHandler),
         ],
         system_state=state,
         robot_worker=robot_worker,

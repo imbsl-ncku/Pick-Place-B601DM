@@ -768,6 +768,186 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
             (self.state.waypoints_cfg_path).write_text(orig_wps, encoding="utf-8")
             self.state.reload_config()
 
+    def test_teach_mode_api_get_pose(self) -> None:
+        """GET /api/teach/pose returns live arm pose, joint angles, and staged waypoints."""
+        response = self.fetch("/api/teach/pose")
+        self.assertEqual(response.code, 200)
+        data = json.loads(response.body.decode("utf-8"))
+        self.assertIn("active", data)
+        self.assertIn("joints", data)
+        self.assertIn("joints_deg", data)
+        self.assertIn("cartesian", data)
+        self.assertEqual(len(data["joints"]), 6)
+        self.assertEqual(len(data["joints_deg"]), 6)
+        for k in ("x", "y", "z", "roll", "pitch", "yaw"):
+            self.assertIn(k, data["cartesian"])
+        self.assertIn("gripper_width_m", data)
+        self.assertIn("staged_waypoints", data)
+        self.assertIn("staged_count", data)
+
+    def test_teach_mode_lifecycle_and_safe_home(self) -> None:
+        """Teach mode can be started and stopped, auto-homing the arm on deactivation."""
+        # 1. Start teach mode
+        res_start = self.fetch(
+            "/api/teach/mode",
+            method="POST",
+            body=json.dumps({"action": "start"}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_start.code, 200)
+        self.robot_worker._execute_start_teach_mode()
+        self.assertTrue(self.state.teach_mode_active)
+
+        # 2. Stop teach mode (deactivates and runs safe home)
+        res_stop = self.fetch(
+            "/api/teach/mode",
+            method="POST",
+            body=json.dumps({"action": "stop"}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_stop.code, 200)
+        self.robot_worker._execute_stop_teach_mode()
+        self.assertFalse(self.state.teach_mode_active)
+        latest_logs = [log["text"] for log in self.state.logs]
+        self.assertTrue(any("Teach Mode deactivated. Arm safely homed." in log for log in latest_logs))
+
+    def test_teach_mode_stage_and_discard_and_clear(self) -> None:
+        """Staging board supports adding Cartesian or Joint poses, discarding individual items, and clearing."""
+        with self.state.lock:
+            self.state.staged_waypoints.clear()
+
+        # 1. Stage in Cartesian mode
+        res_cart = self.fetch(
+            "/api/teach/stage",
+            method="POST",
+            body=json.dumps({
+                "action": "stage_add",
+                "mode": "cartesian",
+                "duration": 2.5,
+                "gripper": "open",
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_cart.code, 200)
+        data_cart = json.loads(res_cart.body.decode("utf-8"))
+        self.assertTrue(data_cart["success"])
+        self.assertEqual(data_cart["count"], 1)
+        self.assertEqual(self.state.staged_waypoints[0]["mode"], "cartesian")
+        self.assertIn("x", self.state.staged_waypoints[0])
+        self.assertEqual(self.state.staged_waypoints[0]["duration"], 2.5)
+        self.assertEqual(self.state.staged_waypoints[0]["gripper"], "open")
+
+        # 2. Stage in Joint Angles mode
+        res_joints = self.fetch(
+            "/api/teach/stage",
+            method="POST",
+            body=json.dumps({
+                "action": "stage_add",
+                "mode": "joints",
+                "duration": 3.0,
+                "gripper": "keep",
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_joints.code, 200)
+        data_joints = json.loads(res_joints.body.decode("utf-8"))
+        self.assertEqual(data_joints["count"], 2)
+        self.assertEqual(self.state.staged_waypoints[1]["mode"], "joints")
+        self.assertIn("joints", self.state.staged_waypoints[1])
+        self.assertEqual(len(self.state.staged_waypoints[1]["joints"]), 6)
+
+        # 3. Discard individual pose #0
+        res_discard = self.fetch(
+            "/api/teach/stage",
+            method="POST",
+            body=json.dumps({
+                "action": "stage_discard",
+                "index": 0,
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_discard.code, 200)
+        self.assertEqual(len(self.state.staged_waypoints), 1)
+        self.assertEqual(self.state.staged_waypoints[0]["mode"], "joints")
+
+        # 4. Clear all staged poses
+        res_clear = self.fetch(
+            "/api/teach/stage",
+            method="POST",
+            body=json.dumps({"action": "stage_clear"}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_clear.code, 200)
+        self.assertEqual(len(self.state.staged_waypoints), 0)
+
+    def test_teach_mode_commit_and_waypoint_resolution(self) -> None:
+        """Exporting staged points persists Cartesian and Joint waypoints and resolves them via kinematics."""
+        orig_wps = (self.state.waypoints_cfg_path).read_text(encoding="utf-8")
+        try:
+            with self.state.lock:
+                self.state.staged_waypoints = [
+                    {
+                        "mode": "cartesian",
+                        "x": 0.360, "y": 0.050, "z": 0.220,
+                        "roll": 0.0, "pitch": 0.65, "yaw": 0.0,
+                        "duration": 2.2, "gripper": "keep",
+                    },
+                    {
+                        "mode": "joints",
+                        "joints": [0.0, -0.65, -0.85, 0.0, 0.45, 0.0],
+                        "duration": 2.8, "gripper": "open",
+                    },
+                ]
+
+            init_retreat_count = len(self.state.retreat_waypoints)
+
+            # Commit to retreat
+            res_commit = self.fetch(
+                "/api/teach/commit",
+                method="POST",
+                body=json.dumps({"action": "commit", "target": "retreat"}),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(res_commit.code, 200)
+            self.assertEqual(len(self.state.retreat_waypoints), init_retreat_count + 2)
+
+            # Test that _resolve_waypoint_pose resolves both the Cartesian and Joint waypoints
+            from scripts.web_grasp_gui import _resolve_waypoint_pose
+            cart_wp = self.state.retreat_waypoints[-2]
+            joint_wp = self.state.retreat_waypoints[-1]
+
+            cx, cy, cz, cr, cp, cyaw, cdur = _resolve_waypoint_pose(cart_wp, (0.35, 0, 0.15), {"roll": 0, "pitch": 0, "yaw": 0})
+            self.assertAlmostEqual(cx, 0.360, places=3)
+            self.assertAlmostEqual(cdur, 2.2, places=1)
+
+            jx, jy, jz, jr, jp, jyaw, jdur = _resolve_waypoint_pose(joint_wp, (0.35, 0, 0.15), {"roll": 0, "pitch": 0, "yaw": 0})
+            self.assertAlmostEqual(jdur, 2.8, places=1)
+            self.assertIsInstance(jx, float)
+            self.assertIsInstance(jz, float)
+        finally:
+            (self.state.waypoints_cfg_path).write_text(orig_wps, encoding="utf-8")
+            self.state.reload_waypoints_from_disk()
+
+    def test_teach_mode_html_elements(self) -> None:
+        """HTML must contain Tab 5 elements: side-by-side boards, slide selector, and zero emoji icons."""
+        response = self.fetch("/")
+        self.assertEqual(response.code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("Teach &amp; Record", body)
+        self.assertIn("tab-teach", body)
+        self.assertIn("btn-teach-toggle", body)
+        self.assertIn("teach-status-badge", body)
+        self.assertIn("btn-mode-cartesian", body)
+        self.assertIn("btn-mode-joints", body)
+        self.assertIn("teach-hud-cartesian", body)
+        self.assertIn("teach-hud-joints", body)
+        self.assertIn("RECORDED WAYPOINTS BOARD", body)
+        self.assertIn("btn-record-pose", body)
+        self.assertIn("teach-staged-container", body)
+        self.assertIn("commitTeachWaypoints", body)
+        self.assertIn("discardTeachPose", body)
+        self.assertIn("clearTeachStaging", body)
+
 
 if __name__ == "__main__":
     unittest.main()
