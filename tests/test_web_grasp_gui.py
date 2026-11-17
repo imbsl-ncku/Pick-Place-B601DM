@@ -7,6 +7,9 @@ Tests state management, REST endpoints, left-to-right sorting, and retreat waypo
 import copy
 import json
 import logging
+import os
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -229,6 +232,94 @@ class TestWebGraspGuiLogic(unittest.TestCase):
         self.assertIsNotNone(self.state.last_error)
         self.assertIn("Motor feedback verification failed", self.state.last_error["text"])
 
+    def test_disable_robot_performs_safe_home_first(self) -> None:
+        """When disable is commanded on an enabled arm, it executes safe home first, then disables."""
+        worker = RobotWorker(self.state)
+        mock_ctrl = Mock(safe_home=Mock(), _running=True)
+        mock_arm = Mock(disable_all=Mock())
+        self.state.controller = mock_ctrl
+        self.state.arm = mock_arm
+        self.state.dry_run = False
+        self.state.robot_enabled = True
+
+        call_order = []
+        mock_ctrl.safe_home.side_effect = lambda: call_order.append("safe_home")
+        mock_arm.disable_all.side_effect = lambda: call_order.append("disable_all")
+
+        worker._execute_disable()
+
+        self.assertFalse(self.state.robot_enabled)
+        self.assertEqual(call_order, ["safe_home", "disable_all"])
+        self.assertTrue(any("Safe homing arm before disabling motors for safety" in log["text"] for log in self.state.logs))
+
+    def test_emergency_stop_strict_order_execution(self) -> None:
+        """Emergency stop must execute strictly in order: Stop -> Return Home (open gripper) -> Disable."""
+        worker = RobotWorker(self.state)
+        mock_ctrl = Mock(safe_home=Mock(), _running=True)
+        mock_driver = Mock(open_gripper=Mock())
+        mock_arm = Mock(disable_all=Mock())
+        self.state.controller = mock_ctrl
+        self.state.grasp_driver = mock_driver
+        self.state.arm = mock_arm
+        self.state.dry_run = False
+        self.state.robot_enabled = True
+        self.state.gripper_ready_open_m = 0.055
+
+        call_order = []
+        mock_driver.open_gripper.side_effect = lambda **kwargs: call_order.append(f"open_gripper({kwargs.get('distance_m', 0.055)})")
+        mock_ctrl.safe_home.side_effect = lambda: call_order.append("safe_home")
+        mock_arm.disable_all.side_effect = lambda: call_order.append("disable_all")
+
+        # Set abort event to simulate execution being interrupted
+        worker.abort_event.set()
+        worker._execute_emergency_stop()
+
+        self.assertFalse(self.state.robot_enabled)
+        self.assertFalse(worker.abort_event.is_set())
+        self.assertEqual(call_order, ["open_gripper(0.055)", "safe_home", "disable_all"])
+        self.assertTrue(any("Step 1/3: Execution stopped immediately" in log["text"] for log in self.state.logs))
+        self.assertTrue(any("Step 2/3: Opening gripper to Ready Open Width" in log["text"] for log in self.state.logs))
+        self.assertTrue(any("Step 3/3: Disabling robot motors" in log["text"] for log in self.state.logs))
+
+    def test_trigger_emergency_stop_aborts_active_execution(self) -> None:
+        """trigger_emergency_stop sets abort_event, clears queues, signals controller and enqueues emergency_stop."""
+        worker = RobotWorker(self.state)
+        mock_ctrl = Mock(_stop_send=threading.Event())
+        mock_driver = Mock(_state_lock=threading.Lock(), _grasp_result=None, _position_reached=False)
+        self.state.controller = mock_ctrl
+        self.state.grasp_driver = mock_driver
+        self.state.queue = [{"queue_uid": 1, "tube_id": 1}]
+        worker.command_queue.append(("grasp_queue", None))
+
+        worker.trigger_emergency_stop()
+
+        self.assertTrue(worker.abort_event.is_set())
+        self.assertTrue(worker.state.pause_event.is_set())
+        self.assertTrue(mock_ctrl._stop_send.is_set())
+        self.assertEqual(len(self.state.queue), 0)
+        self.assertEqual(list(worker.command_queue), [("emergency_stop", None)])
+
+    def test_robot_worker_shutdown_disables_motors(self) -> None:
+        """When terminal shutdown is invoked (Ctrl+C / interrupt), robot motors must be disabled and disconnected."""
+        worker = RobotWorker(self.state)
+        mock_ctrl = Mock(_running=True)
+        mock_driver = Mock(stop=Mock())
+        mock_arm = Mock(disable_all=Mock(), disconnect=Mock())
+        self.state.controller = mock_ctrl
+        self.state.grasp_driver = mock_driver
+        self.state.arm = mock_arm
+        self.state.dry_run = False
+        self.state.robot_enabled = True
+        self.state.robot_connected = True
+
+        worker.shutdown()
+
+        self.assertFalse(self.state.robot_enabled)
+        self.assertFalse(self.state.robot_connected)
+        mock_arm.disable_all.assert_called_once()
+        mock_arm.disconnect.assert_called_once()
+        self.assertTrue(any("Robot hardware confirmed DISABLED on shutdown" in log["text"] for log in self.state.logs))
+
     def test_robot_worker_blocks_execution_when_disabled(self) -> None:
         """RobotWorker must block motion execution and log short warning if robot_enabled is False."""
         worker = RobotWorker(self.state)
@@ -250,6 +341,19 @@ class TestWebGraspGuiLogic(unittest.TestCase):
         # Test _execute_ready_pose
         worker._execute_ready_pose()
         self.assertTrue(any("Robot disabled. Enable robot first." in log["text"] for log in self.state.logs))
+
+    def test_robot_worker_execute_queue_applies_grasp_z_offset(self) -> None:
+        """RobotWorker._execute_queue applies grasp_z_offset_m to the target Z coordinate."""
+        worker = RobotWorker(self.state)
+        self.state.robot_enabled = True
+        self.state.dry_run = True
+        self.state.cfg.setdefault("grasp_pipeline", {}).setdefault("grasp", {})["grasp_z_offset_m"] = -0.035
+        p_base = np.array([0.35, 0.05, 0.17], dtype=np.float64)
+        self.state.queue = [{"queue_uid": 1, "label": "Falcon Tube #1", "p_base": p_base, "jaw_width_m": 0.03}]
+
+        worker._execute_queue()
+        expected_log = "target=(0.350, 0.050, 0.135) [z_offset=-3.5cm]"
+        self.assertTrue(any(expected_log in log["text"] for log in self.state.logs))
 
 
 class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
@@ -284,6 +388,12 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("badge-enabled-container", body)
         self.assertIn("card-led-bulb", body)
         self.assertIn("Motor Driver Feedback", body)
+        self.assertIn("cfg-grasp-z-offset", body)
+        self.assertIn("tubes-bar", body)
+        self.assertIn("lastTubesBarHtml", body)
+        self.assertIn("btn-stop", body)
+        self.assertIn("EMERGENCY STOP", body)
+        self.assertIn("emergencyStop()", body)
 
     def test_get_status_api(self) -> None:
         """GET /api/status must return operational status, tube list, and queue."""
@@ -386,6 +496,16 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(res_dis.code, 200)
         self.assertTrue(json.loads(res_dis.body.decode("utf-8"))["success"])
 
+        # Emergency Stop API endpoint
+        res_stop = self.fetch(
+            "/api/action",
+            method="POST",
+            body=json.dumps({"action": "emergency_stop"}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(res_stop.code, 200)
+        self.assertTrue(json.loads(res_stop.body.decode("utf-8"))["success"])
+
     def test_action_api_blocked_when_robot_disabled(self) -> None:
         """When robot is disabled, motion executions (grasp, macro_center, safe_home, ready_pose) must be blocked."""
         self.state.robot_enabled = False
@@ -461,6 +581,9 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         cfg = json.loads(res_get.body.decode("utf-8"))
         self.assertIn("camera", cfg)
         self.assertIn("robot", cfg)
+        self.assertIn("grasp_pipeline", cfg)
+        self.assertIn("grasp", cfg["grasp_pipeline"])
+        self.assertEqual(cfg["grasp_pipeline"]["grasp"].get("grasp_z_offset_m"), -0.02)
         self.assertIn("gripper", cfg["robot"])
         self.assertEqual(cfg["robot"]["gripper"]["ready_open_m"], 0.055)
         self.assertEqual(cfg["robot"]["gripper"]["close_offset_m"], 0.01)
@@ -471,7 +594,12 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         orig_wps = (self.state.waypoints_cfg_path).read_text(encoding="utf-8")
         try:
             update_payload = {
-                "grasp_pipeline": {"grasp": {"table_z_m": 0.175}},
+                "grasp_pipeline": {
+                    "grasp": {
+                        "table_z_m": 0.175,
+                        "grasp_z_offset_m": -0.035,
+                    }
+                },
                 "camera": {"focus": 10},
                 "robot": {
                     "gripper": {
@@ -494,6 +622,7 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
             # Verify on-disk file has updated values
             updated_cfg = yaml.safe_load((self.cfg_path).read_text(encoding="utf-8"))
             self.assertEqual(updated_cfg["grasp_pipeline"]["grasp"]["table_z_m"], 0.175)
+            self.assertEqual(updated_cfg["grasp_pipeline"]["grasp"]["grasp_z_offset_m"], -0.035)
             self.assertEqual(updated_cfg["camera"]["focus"], 10)
             self.assertEqual(updated_cfg["robot"]["gripper"]["ready_open_m"], 0.065)
             self.assertEqual(updated_cfg["robot"]["gripper"]["close_offset_m"], 0.015)
@@ -593,6 +722,51 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(res_clear.code, 200)
         self.assertEqual(self.state.error_count, 0)
         self.assertIsNone(self.state.last_error)
+
+    def test_auto_sync_external_config_and_ready_pose(self) -> None:
+        """Modifying default.yaml on disk auto-syncs into GUI API and robot worker motions immediately."""
+        orig_content = (self.cfg_path).read_text(encoding="utf-8")
+        orig_wps = (self.state.waypoints_cfg_path).read_text(encoding="utf-8")
+        try:
+            # Modify default.yaml externally
+            cfg_data = yaml.safe_load(orig_content)
+            cfg_data["robot"]["ready_pose"] = {
+                "x": 0.42,
+                "y": 0.05,
+                "z": 0.33,
+                "pitch": 0.85,
+                "duration": 2.5,
+            }
+            cfg_data["robot"]["gripper"]["ready_open_m"] = 0.062
+            (self.cfg_path).write_text(yaml.dump(cfg_data), encoding="utf-8")
+            # Advance mtime slightly so stat() detects modification
+            new_mtime = time.time() + 2.0
+            os.utime(str(self.cfg_path), (new_mtime, new_mtime))
+
+            # 1. Fetching GET / (MainIndexHandler) triggers check_and_reload_if_modified
+            res_index = self.fetch("/")
+            self.assertEqual(res_index.code, 200)
+            self.assertEqual(self.state.cfg["robot"]["ready_pose"]["x"], 0.42)
+            self.assertEqual(self.state.cfg["robot"]["ready_pose"]["pitch"], 0.85)
+            self.assertEqual(self.state.gripper_ready_open_m, 0.062)
+
+            # 2. Fetching /api/config returns the newly loaded configuration
+            res_cfg = self.fetch("/api/config")
+            self.assertEqual(res_cfg.code, 200)
+            cfg_resp = json.loads(res_cfg.body.decode("utf-8"))
+            self.assertEqual(cfg_resp["robot"]["ready_pose"]["x"], 0.42)
+            self.assertEqual(cfg_resp["robot"]["gripper"]["ready_open_m"], 0.062)
+
+            # 3. Executing ready pose logs the exact new coordinates
+            self.state.robot_enabled = True
+            self.robot_worker._execute_ready_pose()
+            latest_logs = [log["text"] for log in self.state.logs]
+            matching_log = any("Moving arm to Ready Pose: (x=0.420, y=0.050, z=0.330, pitch=0.85, gripper=6.2cm)" in log for log in latest_logs)
+            self.assertTrue(matching_log, f"Expected ready pose log not found in: {latest_logs[-5:]}")
+        finally:
+            (self.cfg_path).write_text(orig_content, encoding="utf-8")
+            (self.state.waypoints_cfg_path).write_text(orig_wps, encoding="utf-8")
+            self.state.reload_config()
 
 
 if __name__ == "__main__":

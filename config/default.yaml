@@ -1,36 +1,34 @@
 camera:
   type: webcam
-  id: 4           # DFRobot/UC60 mounted on arm; video4 is the Logitech C920
+  id: 4
   serial: null
   color_width: 1280
   color_height: 720
   fps: 30
   fourcc: MJPG
-  buffer_size: 2   # allow capture to continue while MJPEG is decoded
-  autofocus: false  # null preserves camera state; false locks focus
-  focus: 0      # choose with scripts/preview_camera_focus.py; device-specific units
-  intrinsics_file: "config/calibration/webcam/intrinsics_Nov08_Focus_0.npz"
-
+  buffer_size: 2
+  autofocus: false
+  focus: 0
+  intrinsics_file: config/calibration/webcam/intrinsics_Nov08_Focus_0.npz
 calibration:
-  hand_eye_file: "hand_eye_test_manually_focus0_nov08.npz"  #"hand_eye.npz"
+  hand_eye_file: hand_eye_test_manually_focus0_nov08.npz
   aruco:
-    marker_length_m: 0.100  # 100 mm between outer black-border edges, excluding white margin
-    dict_id: 20            # cv2.aruco.DICT_APRILTAG_36h11
+    marker_length_m: 0.1
+    dict_id: 20
     target_marker_id: 0
   hand_eye_method: TSAI
   auto:
-    translation_radius_m: 0.01  # at most 10 mm from first marker-visible TCP pose
-    rotation_deg: 15.0         # varied rotations around multiple axes
+    translation_radius_m: 0.01
+    rotation_deg: 15.0
     target_samples: 25
-    max_attempts: 60           # bounds retries if local poses cannot see the marker
+    max_attempts: 60
   hand_eye_compensation_m:
-    x: 0.00    #0.01
+    x: 0.02
     y: 0.01
-    z: 0.00
+    z: 0
 detection:
-  conf_threshold: 0.50
+  conf_threshold: 0.5
   iou_threshold: 0.45
-
 robot:
   repo_root: null
   gripper:
@@ -42,7 +40,7 @@ robot:
       counterclockwise: true
       tau_max: 1.5
       close_torque: 1.0
-      default_force: 0.30
+      default_force: 0.3
     rs:
       angle_open: 5.0
       counterclockwise: false
@@ -51,33 +49,31 @@ robot:
       default_force: 0.05
   ready_pose:
     x: 0.3
-    y: 0.0
+    y: 0
     z: 0.3
     roll: 0.0
     pitch: 0.7
     duration: 3.0
-
 yolo:
-  model_name: "best_with_green_rack.pt"
-  device: "0" #Original cpu
+  model_name: best_with_green_rack.pt
+  device: '0'
   use_world: true
   custom_classes:
-    - "yellow screwdriver"
-    - "blue cap with transparent centrifuge tube inside a container"
-  #  - "glasses"
-  #  - "bottle"
-    - "blue cube"
-    - "a thin transparent plastic ring on a dark surface"
+  - yellow screwdriver
+  - blue cap with transparent centrifuge tube inside a container
+  - blue cube
+  - a thin transparent plastic ring on a dark surface
 grasp_pipeline:
   infer_every_live: 1
   grasp:
-    table_z_m: 0.17             #0.16 for falcon tube, always +0.05 as the base is 5cm higher than the table
+    table_z_m: 0.17
     depth_quantile: 0.5
-    pregrasp_offset_m: 0.150
-    insertion_depth_m: 0.00
-    min_base_z_m: 0.00
+    pregrasp_offset_m: 0.15
+    insertion_depth_m: 0
+    grasp_z_offset_m: -0.02
+    min_base_z_m: 0.0
 graspnet:
-  checkpoint: "checkpoint-rs.tar"
+  checkpoint: checkpoint-rs.tar
   num_point: 20000
   collision_thresh: 0.01
   min_depth: 0.05

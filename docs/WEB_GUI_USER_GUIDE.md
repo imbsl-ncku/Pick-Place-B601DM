@@ -51,54 +51,55 @@ You only need 3 simple steps to pick tubes:
 
 ---
 
-## 3. 🎮 Action Buttons Cheat Sheet
+## 3. Action Buttons Cheat Sheet
 
-All buttons are on the right side of the main **🎮 Visual Grasping** screen:
+All buttons are on the right side of the main **Visual Grasping** screen:
 
 | Button | Label | What it does | When to use |
 |---|---|---|---|
-| ▶ | **GRASP QUEUE** | Freezes the frame and picks queued tubes one by one. | When you are ready to pick your selected tubes. |
-| 🦾 | **Ready Pose** | Moves the arm to the default overhead scanning pose. | Always click this first before picking tubes. |
-| ⚡ | **Enable Robot** | Activates motor holding torque without moving. | If motors were disabled, re-enable before motion. |
-| 🛑 | **Disable Robot** | Powers off motor torque (limp mode). | When powering off or moving the arm manually by hand. |
-| 🏠 | **Safe Home** | Releases the gripper and smoothly parks arm at joint zero. | When finishing work, or to safely abort motion. |
-| 🎯 | **Macro Center** | Centers the camera directly above the selected tube. | To inspect a tube directly beneath the camera. |
-| ❄️ | **Reset / Unfreeze** | Cancels frozen frame and restores live camera view. | If you want to cancel a grasp or clear the view. |
-| ⏸ | **Resume from Pause** | Resumes motion after a programmed waypoint pause. | Only appears if an active waypoint paused the arm. |
+| - | **GRASP QUEUE** | Freezes the frame and picks queued tubes one by one. | When you are ready to pick your selected tubes. |
+| - | **EMERGENCY STOP** | Immediately stops any ongoing motion, opens gripper to Ready Open Width, returns arm safely to Home, and disables motors in strict order. | Any time during execution if a problem occurs or for emergency abort. |
+| - | **Ready Pose** | Moves the arm to the default overhead scanning pose. | Always click this first before picking tubes. |
+| - | **Enable Robot** | Activates motor holding torque without moving. | If motors were disabled, re-enable before motion. |
+| - | **Disable Robot** | Moves arm to Safe Home first, then cuts motor torque (limp mode) for safety. | When powering off or moving the arm manually by hand. |
+| - | **Safe Home** | Releases the gripper and smoothly parks arm at joint zero. | When finishing work, or to safely abort motion. |
+| - | **Macro Center** | Centers the camera directly above the selected tube. | To inspect a tube directly beneath the camera. |
+| - | **Reset / Unfreeze** | Cancels frozen frame and restores live camera view. | If you want to cancel a grasp or clear the view. |
+| - | **Resume from Pause** | Resumes motion after a programmed waypoint pause. | Only appears if an active waypoint paused the arm. |
 
 ---
 
-## 4. 🏷️ Top Status Badges & Hardware LED Indicator
+## 4. Top Status Badges & Hardware LED Indicator
 
 Look at the top header bar and the action control panel to quickly check verified system status:
 
-- `🟢 LIVE`: Camera is actively streaming and scanning the rack.
-- `❄️ FROZEN`: Frame is locked while the robot is grasping to prevent coordinate drift.
+- `LIVE`: Camera is actively streaming and scanning the rack.
+- `FROZEN`: Frame is locked while the robot is grasping to prevent coordinate drift.
 - **Hardware Feedback LED Indicator** (in header & above action buttons):
   - `● Glowing Green LED (ROBOT ENABLED)`: **Real hardware feedback confirmed!** The robot driver verified via CAN bus communication that all joint motors are energized, holding torque is active, and the arm is holding pose.
   - `● Dim Gray LED (ROBOT DISABLED)`: Motor torque is released (limp mode, safe to move the arm by hand), or the hardware is unpowered/disconnected.
   - `● Pulsing Amber LED (VERIFYING FEEDBACK)`: The "Enable Robot" command was transmitted to the arm; the system is actively waiting for motor feedback frames before turning green. If hardware does not respond, the LED will remain dim gray and an error will be logged.
-- `📍 2 WPs (0 App / 2 Ret)`: Number of active motion waypoints (0 approach, 2 retreat waypoints). Click it to jump directly to the Waypoints Editor!
+- `2 WPs (0 App / 2 Ret)`: Number of active motion waypoints (0 approach, 2 retreat waypoints). Click it to jump directly to the Waypoints Editor!
 - `Connected / Hardware`: Indicates whether connected to physical arm or running in simulated dry-run mode.
 
 ---
 
-## 5. 📑 Navigation Tabs Overview
+## 5. Navigation Tabs Overview
 
 The dashboard has 4 tabs at the top:
 
-1. **🎮 Visual Grasping**:
+1. **Visual Grasping**:
    - The primary workstation screen.
    - Shows the live camera feed, tube selection buttons, picking queue, action buttons, and system telemetry console.
-2. **📍 Waypoints Editor**:
+2. **Waypoints Editor**:
    - Allows viewing and editing robot via-points before grasping (**Approach**) and after grasping (**Retreat**).
    - Any changes are **automatically saved** to `config/waypoints.yaml` on disk.
    - By default, it uses the proven safe retreat path: lift +10cm vertically, then tilt-away pose.
-3. **⚙️ Robot & Camera Config**:
-   - Configure camera focus, table height, pre-grasp clearances, ready pose coordinates, and **gripper width parameters** (Ready Open Width `0.055m`, Fixed Close Width `0.030m`, and Close Offset Margin `0.010m`).
+3. **Robot & Camera Config**:
+   - Configure camera focus, table height, pre-grasp clearances, **grasp Z offset/depth** (e.g. `-0.020m` to plunge deeper onto the tube body without shifting horizontal X/Y), ready pose coordinates, and **gripper width parameters** (Ready Open Width `0.055m`, Fixed Close Width `0.030m`, and Close Offset Margin `0.010m`).
    - Includes an instant **"Test Gripper Width Now"** tool to verify jaw motion on hardware.
-   - Saves directly to `config/default.yaml` and synchronizes to `config/waypoints.yaml`.
-4. **📖 User Guide**:
+   - Saves directly to `config/default.yaml` and synchronizes automatically on disk.
+4. **User Guide**:
    - An on-screen version of this guide accessible at any time with one click!
 
 ---
@@ -108,11 +109,14 @@ The dashboard has 4 tabs at the top:
 ### Q: Why didn't the robot move when I started the server?
 **A:** This is an intentional safety feature! On startup, the system powers on holding torque so the arm does not sag, but it **never moves automatically**. You must click **"Ready Pose"** when you are ready.
 
-### Q: How do I stop or abort motion safely?
-**A:** Click **"Safe Home"**. The robot will open its gripper and smoothly return to its zero home position via a minimum-jerk trajectory.
+### Q: How do I stop or abort motion safely if there is a problem?
+**A:** Click the red **"EMERGENCY STOP"** button on the station dashboard. No matter which step or trajectory the robot is currently performing, the system executes a strict 3-step safe abort sequence in exact order:
+1. **STOP**: Immediately aborts the active motion and trajectory within 50ms, clearing remaining queued targets.
+2. **RETURN HOME with gripper open**: Automatically commands the gripper open to Ready Open Width (`0.055m` / `5.5cm`) so any clamped object is released, then smoothly calculates and follows a minimum-jerk trajectory back to the zero safe home pose.
+3. **DISABLE**: Cuts physical motor torque (`disable_all()`) once safely at home, putting motors in limp mode and updating the hardware feedback LED to dim gray.
 
 ### Q: What if an error occurs?
-**A:** An alert banner (`🚨 RUNTIME ERROR DETECTED`) will appear above the System Telemetry console. Click **"🔍 View Stack Traceback"** to see what happened, or click `Safe Home` and then restart the operation.
+**A:** An alert banner (`RUNTIME ERROR DETECTED`) will appear above the System Telemetry console. Click **"View Stack Traceback"** to see what happened, or click `EMERGENCY STOP` or `Safe Home` and then restart the operation.
 
 ### Q: Can I pick tubes in reverse or random order?
 **A:** Yes! Tubes are numbered #1 to #N from left to right. You can click `#4`, then `#2`, then `#1`—the robot will execute the exact order listed in your **PICKING QUEUE**.
@@ -123,3 +127,6 @@ The dashboard has 4 tabs at the top:
 python3 scripts/web_grasp_gui.py --dry-run --port 8000
 ```
 This runs the full vision and queue pipeline with a simulated robot.
+
+### Q: What happens if I close the terminal or press Ctrl+C?
+**A:** When `Ctrl+C` (or SIGINT/SIGTERM) is pressed in the terminal, the shutdown handler immediately cuts motor holding torque (`disable_all()`) and disconnects the CAN bus interface so the robot is safely disabled rather than left energized and holding torque.

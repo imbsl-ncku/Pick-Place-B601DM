@@ -439,6 +439,7 @@ def _compute_fixed_orientation_grasp(
     position_cam: np.ndarray,
     T_cam2base: np.ndarray,
     insertion_depth_m: float = 0.0,
+    grasp_z_offset_m: float = -0.02,
 ) -> tuple[tuple[float, float, float, float, float, float], tuple[float, float, float, float, float, float]]:
     """Transform YOLO 3D camera position to Base Frame and pair with FIXED_GRASP_RPY."""
     p_cam_h = np.array([position_cam[0], position_cam[1], position_cam[2], 1.0], dtype=np.float64)
@@ -446,7 +447,7 @@ def _compute_fixed_orientation_grasp(
 
     xg = float(p_base[0]) + float(insertion_depth_m)
     yg = float(p_base[1])
-    zg = float(p_base[2]) #- 0.01
+    zg = float(p_base[2]) + float(grasp_z_offset_m)
 
     rxg = float(FIXED_GRASP_RPY["roll"])
     ryg = float(FIXED_GRASP_RPY["pitch"])
@@ -693,6 +694,7 @@ def main() -> int:
 
         model_name = yolo_cfg.get("model_name", "yoloe-26s-seg.pt")
         insertion_depth_m = float(grasp_cfg.get("insertion_depth_m", 0.0))
+        grasp_z_offset_m = float(grasp_cfg.get("grasp_z_offset_m", -0.02))
         depth_quantile = float(grasp_cfg.get("depth_quantile", 0.75))
         table_z_m = float(grasp_cfg.get("table_z_m", 0.0))
         infer_every = max(1, int(gp_cfg.get("infer_every_live", 2)))
@@ -899,6 +901,7 @@ def main() -> int:
                     best.position,
                     T_cam2base,
                     insertion_depth_m,
+                    grasp_z_offset_m,
                 )
                 _execute_fixed_path_grasp(
                     controller,

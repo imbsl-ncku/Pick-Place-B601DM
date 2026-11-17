@@ -19,11 +19,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import collections
 import copy
 import json
 import logging
 import os
+import signal
 import sys
 import threading
 import time
@@ -119,17 +121,57 @@ RETREAT_WAYPOINTS: list[dict[str, Any]] = [
 ]
 
 
-def _wait_motion(controller: Any, duration: float, settle_time: float = 0.4) -> None:
+class ExecutionAborted(Exception):
+    """Raised when an ongoing motion or sequence is aborted by Emergency Stop."""
+    pass
+
+
+def _wait_motion(
+    controller: Any,
+    duration: float,
+    settle_time: float = 0.4,
+    abort_event: Optional[threading.Event] = None,
+) -> None:
+    if abort_event is not None and abort_event.is_set():
+        raise ExecutionAborted("Emergency stop requested.")
+
     if controller is None:
-        time.sleep(duration)
+        if abort_event is not None:
+            if abort_event.wait(timeout=duration):
+                raise ExecutionAborted("Emergency stop requested during motion.")
+        else:
+            time.sleep(duration)
+        if settle_time > 0:
+            if abort_event is not None:
+                if abort_event.wait(timeout=settle_time):
+                    raise ExecutionAborted("Emergency stop requested during settling.")
+            else:
+                time.sleep(settle_time)
         return
+
     thread = getattr(controller, "_send_thread", None)
     if thread is not None and thread.is_alive():
-        thread.join(timeout=duration + 2.0)
+        deadline = time.monotonic() + duration + 2.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            if abort_event is not None and abort_event.is_set():
+                if hasattr(controller, "_stop_send"):
+                    controller._stop_send.set()
+                thread.join(timeout=0.2)
+                raise ExecutionAborted("Emergency stop requested during trajectory execution.")
+            thread.join(timeout=0.05)
     else:
-        time.sleep(duration)
+        if abort_event is not None:
+            if abort_event.wait(timeout=duration):
+                raise ExecutionAborted("Emergency stop requested during motion.")
+        else:
+            time.sleep(duration)
+
     if settle_time > 0:
-        time.sleep(settle_time)
+        if abort_event is not None:
+            if abort_event.wait(timeout=settle_time):
+                raise ExecutionAborted("Emergency stop requested during settling.")
+        else:
+            time.sleep(settle_time)
 
 
 def _move_ready(
@@ -139,7 +181,10 @@ def _move_ready(
     open_at_ready: bool = True,
     dry_run: bool = False,
     ready_open_m: Optional[float] = None,
+    abort_event: Optional[threading.Event] = None,
 ) -> None:
+    if abort_event is not None and abort_event.is_set():
+        raise ExecutionAborted("Emergency stop requested before ready pose motion.")
     duration = float(ready_cfg.get("duration", 3.0))
     x = float(ready_cfg.get("x", 0.35))
     y = float(ready_cfg.get("y", 0.0))
@@ -149,12 +194,18 @@ def _move_ready(
     yaw = float(ready_cfg.get("yaw", 0.0))
     if not dry_run and controller is not None:
         controller.move_to_traj(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, duration=duration)
-        _wait_motion(controller, duration)
+        _wait_motion(controller, duration, abort_event=abort_event)
+        if abort_event is not None and abort_event.is_set():
+            raise ExecutionAborted("Emergency stop requested during ready pose motion.")
         if open_at_ready and grasp_driver is not None:
             open_width = ready_open_m if ready_open_m is not None else GRIPPER_READY_OPEN_M
             grasp_driver.open_gripper(distance_m=open_width)
     else:
-        time.sleep(0.1)
+        if abort_event is not None:
+            if abort_event.wait(timeout=0.1):
+                raise ExecutionAborted("Emergency stop requested.")
+        else:
+            time.sleep(0.1)
 
 
 def _cam_to_base(T_hand_eye: np.ndarray, grasp_driver: GraspDriver, cfg: dict[str, Any], dry_run: bool = False) -> np.ndarray:
@@ -322,6 +373,10 @@ class SystemState:
         self.last_error: Optional[dict[str, Any]] = None
         self.error_count: int = 0
 
+        # File timestamp tracking for auto-syncing external edits
+        self.cfg_mtime: float = self.cfg_path.stat().st_mtime if self.cfg_path.exists() else 0.0
+        self.waypoints_mtime: float = self.waypoints_cfg_path.stat().st_mtime if self.waypoints_cfg_path.exists() else 0.0
+
         # Load active waypoints from waypoints.yaml
         self.reload_waypoints_from_disk()
         self.log(f"System initialized. Dry run: {dry_run}")
@@ -464,6 +519,10 @@ class SystemState:
 
                 with open(self.waypoints_cfg_path, "w", encoding="utf-8") as f:
                     yaml.dump(wps_doc, f, default_flow_style=False, sort_keys=False)
+                try:
+                    self.waypoints_mtime = self.waypoints_cfg_path.stat().st_mtime
+                except Exception:
+                    pass
                 self.log_success(f"Waypoints saved to {self.waypoints_cfg_path.name} on disk.")
                 return True
             except Exception as e:
@@ -482,7 +541,35 @@ class SystemState:
             if "fixed_close_m" in rob_grp:
                 val = rob_grp["fixed_close_m"]
                 self.gripper_fixed_close_m = float(val) if val is not None and str(val).strip() != "" else None
+            try:
+                if self.cfg_path.exists():
+                    self.cfg_mtime = self.cfg_path.stat().st_mtime
+                if self.waypoints_cfg_path.exists():
+                    self.waypoints_mtime = self.waypoints_cfg_path.stat().st_mtime
+            except Exception:
+                pass
             self.log("Configuration and waypoints reloaded from disk.")
+
+    def check_and_reload_if_modified(self) -> bool:
+        """Checks if default.yaml or waypoints.yaml have been modified externally on disk, and reloads them."""
+        with self.lock:
+            modified = False
+            try:
+                if self.cfg_path.exists():
+                    cur_cfg_mtime = self.cfg_path.stat().st_mtime
+                    if cur_cfg_mtime > getattr(self, "cfg_mtime", 0.0) + 1e-4:
+                        modified = True
+                if self.waypoints_cfg_path.exists():
+                    cur_wps_mtime = self.waypoints_cfg_path.stat().st_mtime
+                    if cur_wps_mtime > getattr(self, "waypoints_mtime", 0.0) + 1e-4:
+                        modified = True
+            except Exception as e:
+                self.log_warning(f"Error checking file timestamps: {e}", source="ConfigWatcher")
+
+            if modified:
+                self.reload_config()
+                return True
+            return False
 
     def add_to_queue(self, tube_id: int) -> bool:
         with self.lock:
@@ -807,12 +894,118 @@ class RobotWorker(threading.Thread):
         super().__init__(name="RobotWorker", daemon=True)
         self.state = state
         self.running = True
+        self.abort_event = threading.Event()
         self.command_queue: collections.deque[tuple[str, Any]] = collections.deque()
         self.command_event = threading.Event()
 
     def submit(self, action: str, data: Any = None) -> None:
         self.command_queue.append((action, data))
         self.command_event.set()
+
+    def trigger_emergency_stop(self) -> None:
+        """Immediately aborts any running robot execution and initiates emergency stop:
+        Follows strictly: 1. STOP -> 2. RETURN HOME (open gripper) -> 3. DISABLE.
+        """
+        self.abort_event.set()
+        self.state.pause_event.set()
+
+        with self.state.lock:
+            self.state.status = "executing"
+            self.state.status_detail = "Emergency Stop: Aborting Execution"
+            self.state.queue.clear()
+            ctrl = self.state.controller
+            driver = self.state.grasp_driver
+
+        if ctrl is not None and hasattr(ctrl, "_stop_send"):
+            try:
+                ctrl._stop_send.set()
+            except Exception:
+                pass
+
+        if driver is not None and hasattr(driver, "_state_lock"):
+            try:
+                with driver._state_lock:
+                    if getattr(driver, "_grasp_result", None) is None:
+                        driver._grasp_result = False
+                    driver._position_reached = True
+            except Exception:
+                pass
+
+        # Clear any pending commands and enqueue emergency stop immediately
+        self.command_queue.clear()
+        self.command_queue.appendleft(("emergency_stop", None))
+        self.command_event.set()
+
+    def _execute_emergency_stop(self) -> None:
+        """
+        Executes emergency stop strictly in order:
+        1. STOP: Running step halted, abort flag cleared for safe homing motion.
+        2. RETURN HOME: Open gripper to Ready Open Width, safely home the robot arm.
+        3. DISABLE: Disable robot motors (torque released).
+        """
+        self.abort_event.clear()
+        self.state.log_warning("[EMERGENCY STOP] Step 1/3: Execution stopped immediately.")
+
+        with self.state.lock:
+            self.state.status = "executing"
+            self.state.status_detail = "Emergency Stop: Returning Home (Gripper Opening)"
+            ctrl = self.state.controller
+            driver = self.state.grasp_driver
+            arm = self.state.arm
+            is_en = self.state.robot_enabled
+            dry = self.state.dry_run or arm is None
+            ready_open_w = self.state.gripper_ready_open_m if self.state.gripper_ready_open_m is not None else GRIPPER_READY_OPEN_M
+
+        if not is_en and not dry:
+            self.state.log_warning("[EMERGENCY STOP] Robot motors already disabled; holding safe stopped state.")
+            with self.state.lock:
+                self.state.status = "live"
+                self.state.status_detail = "Emergency Stop: Robot Disabled"
+            return
+
+        # Step 2: RETURN HOME with gripper state open (similar to Ready Open Width)
+        self.state.log(f"[EMERGENCY STOP] Step 2/3: Opening gripper to Ready Open Width ({ready_open_w * 100:.1f} cm) and returning to Safe Home...")
+        if not dry:
+            if driver is not None:
+                try:
+                    driver.open_gripper(distance_m=ready_open_w)
+                except Exception as e:
+                    self.state.log_warning(f"[EMERGENCY STOP] Gripper open note: {e}")
+
+            try:
+                if ctrl is not None and getattr(ctrl, "_running", False):
+                    if hasattr(ctrl, "safe_home"):
+                        self.state.log("[EMERGENCY STOP] Moving arm to Safe Home pose...")
+                        ctrl.safe_home()
+                    else:
+                        ready_cfg = self.state.cfg.get("robot", {}).get("ready_pose", LOCAL_READY_POSE)
+                        _move_ready(ctrl, ready_cfg, grasp_driver=driver, open_at_ready=True, ready_open_m=ready_open_w)
+                self.state.log_success("[EMERGENCY STOP] Arm returned to Safe Home.")
+            except Exception as e:
+                self.state.log_error(f"[EMERGENCY STOP] Safe home motion error: {e}")
+        else:
+            time.sleep(0.1)
+            self.state.log_success(f"[EMERGENCY STOP] [Dry Run] Gripper opened to {ready_open_w * 100:.1f} cm and arm returned to Safe Home.")
+
+        # Step 3: DISABLE robot motors
+        self.state.log("[EMERGENCY STOP] Step 3/3: Disabling robot motors (torque released)...")
+        with self.state.lock:
+            self.state.status_detail = "Emergency Stop: Disabling Motors"
+
+        if not dry and arm is not None:
+            try:
+                arm.disable_all()
+                self.state.log_success("[EMERGENCY STOP] Robot hardware confirmed DISABLED (torque released).")
+            except Exception as e:
+                self.state.log_error(f"[EMERGENCY STOP] Failed to disable robot motors: {e}")
+        else:
+            self.state.log("[EMERGENCY STOP] Robot motors disabled (simulated).")
+
+        with self.state.lock:
+            self.state.robot_enabled = False
+            self.state.status = "live"
+            self.state.status_detail = "Emergency Stop Complete: Arm Homed & Disabled"
+        self.state.log_success("[EMERGENCY STOP] Emergency stop procedure complete.")
 
     def run(self) -> None:
         # Initialize Robot
@@ -864,84 +1057,139 @@ class RobotWorker(threading.Thread):
             self.state.log("Hand-Eye calibration file not found; using identity.")
 
         last_hw_check = time.monotonic()
-        while self.running:
-            self.command_event.wait(timeout=0.1)
+        try:
+            while self.running:
+                self.command_event.wait(timeout=0.1)
 
-            # Continuous hardware health monitor (every 1.0s)
-            now = time.monotonic()
-            if now - last_hw_check > 1.0:
-                last_hw_check = now
-                with self.state.lock:
-                    arm = self.state.arm
-                    is_en = self.state.robot_enabled
-                    dry = self.state.dry_run or arm is None
+                # Continuous hardware health monitor (every 1.0s)
+                now = time.monotonic()
+                if now - last_hw_check > 1.0:
+                    last_hw_check = now
+                    with self.state.lock:
+                        arm = self.state.arm
+                        is_en = self.state.robot_enabled
+                        dry = self.state.dry_run or arm is None
 
-                if not dry and arm is not None and is_en:
-                    try:
-                        unresponsive = []
-                        for gname, group in getattr(arm, "groups", {}).items():
-                            for jc in getattr(group, "_jcfgs", []):
-                                m = getattr(group, "_mm", {}).get(jc.name)
-                                if m is not None:
-                                    st = m.get_state()
-                                    if st is None or not np.all(np.isfinite([st.pos, st.vel, st.torq])):
+                    if not dry and arm is not None and is_en:
+                        try:
+                            unresponsive = []
+                            for gname, group in getattr(arm, "groups", {}).items():
+                                for jc in getattr(group, "_jcfgs", []):
+                                    m = getattr(group, "_mm", {}).get(jc.name)
+                                    if m is not None:
+                                        st = m.get_state()
+                                        if st is None or not np.all(np.isfinite([st.pos, st.vel, st.torq])):
+                                            unresponsive.append(jc.name)
+                                    else:
                                         unresponsive.append(jc.name)
-                                else:
-                                    unresponsive.append(jc.name)
-                        if unresponsive:
+                            if unresponsive:
+                                with self.state.lock:
+                                    self.state.robot_enabled = False
+                                self.state.log_error(
+                                    f"Hardware feedback lost for motor(s): {', '.join(unresponsive)}. Status marked DISABLED.",
+                                    source="RobotMonitor",
+                                )
+                        except Exception as hw_err:
                             with self.state.lock:
                                 self.state.robot_enabled = False
-                            self.state.log_error(
-                                f"Hardware feedback lost for motor(s): {', '.join(unresponsive)}. Status marked DISABLED.",
-                                source="RobotMonitor",
-                            )
-                    except Exception as hw_err:
+                            self.state.log_error(f"Hardware feedback monitoring error: {hw_err}", exc=hw_err, source="RobotMonitor")
+
+                if not self.command_queue:
+                    self.command_event.clear()
+                    continue
+
+                action, data = self.command_queue.popleft()
+
+                # Block robot motions if robot is disabled
+                if action in ("grasp_queue", "macro_center", "safe_home", "ready_pose", "test_gripper"):
+                    with self.state.lock:
+                        if not self.state.robot_enabled:
+                            self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
+                            if self.state.status == "frozen":
+                                self.state.status = "live"
+                                self.state.status_detail = "Live Camera Preview"
+                            continue
+
+                try:
+                    if action == "emergency_stop":
+                        self._execute_emergency_stop()
+                    elif action == "grasp_queue":
+                        self._execute_queue()
+                    elif action == "macro_center":
+                        self._execute_macro_center(data)
+                    elif action == "test_gripper":
+                        self._execute_test_gripper(data)
+                    elif action == "enable_robot":
+                        self._execute_enable()
+                    elif action == "disable_robot":
+                        self._execute_disable()
+                    elif action == "safe_home":
+                        self._execute_safe_home()
+                    elif action == "ready_pose":
+                        self._execute_ready_pose()
+                    elif action == "resume":
+                        self.state.pause_event.set()
+                    elif action == "unfreeze":
                         with self.state.lock:
-                            self.state.robot_enabled = False
-                        self.state.log_error(f"Hardware feedback monitoring error: {hw_err}", exc=hw_err, source="RobotMonitor")
-
-            if not self.command_queue:
-                self.command_event.clear()
-                continue
-
-            action, data = self.command_queue.popleft()
-
-            # Block robot motions if robot is disabled
-            if action in ("grasp_queue", "macro_center", "safe_home", "ready_pose", "test_gripper"):
-                with self.state.lock:
-                    if not self.state.robot_enabled:
-                        self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
-                        if self.state.status == "frozen":
                             self.state.status = "live"
                             self.state.status_detail = "Live Camera Preview"
-                        continue
-
-            try:
-                if action == "grasp_queue":
-                    self._execute_queue()
-                elif action == "macro_center":
-                    self._execute_macro_center(data)
-                elif action == "test_gripper":
-                    self._execute_test_gripper(data)
-                elif action == "enable_robot":
-                    self._execute_enable()
-                elif action == "disable_robot":
-                    self._execute_disable()
-                elif action == "safe_home":
-                    self._execute_safe_home()
-                elif action == "ready_pose":
-                    self._execute_ready_pose()
-                elif action == "resume":
-                    self.state.pause_event.set()
-                elif action == "unfreeze":
+                except ExecutionAborted as ea:
+                    self.state.log_warning(f"[STOP] Action '{action}' interrupted by Emergency Stop: {ea}")
+                except Exception as e:
+                    self.state.log_error(f"Robot action '{action}' error: {e}", exc=e, source="RobotWorker")
                     with self.state.lock:
                         self.state.status = "live"
-                        self.state.status_detail = "Live Camera Preview"
+                        self.state.status_detail = f"Error during {action}"
+        finally:
+            self.shutdown()
+
+    def shutdown(self) -> None:
+        """Safely shuts down the robot worker and unconditionally disables physical motors (Ctrl+C / terminal exit)."""
+        self.running = False
+        self.command_event.set()
+
+        with self.state.lock:
+            arm = self.state.arm
+            ctrl = self.state.controller
+            driver = self.state.grasp_driver
+            dry = self.state.dry_run or arm is None
+
+        if not dry and arm is not None:
+            self.state.log("Terminal shutdown detected: Disabling robot motors (torque released)...", source="Shutdown")
+            print("[Shutdown] Disabling robot motors (torque release)...")
+            try:
+                if driver is not None and hasattr(driver, "stop"):
+                    driver.stop()
             except Exception as e:
-                self.state.log_error(f"Robot action '{action}' error: {e}", exc=e, source="RobotWorker")
-                with self.state.lock:
-                    self.state.status = "live"
-                    self.state.status_detail = f"Error during {action}"
+                self.state.log_warning(f"Error stopping grasp driver: {e}", source="Shutdown")
+
+            try:
+                if ctrl is not None and getattr(ctrl, "_running", False):
+                    if hasattr(ctrl, "rebotarm") and hasattr(ctrl.rebotarm, "stop_control_loop"):
+                        ctrl.rebotarm.stop_control_loop()
+                    ctrl._running = False
+            except Exception as e:
+                self.state.log_warning(f"Error stopping controller control loop: {e}", source="Shutdown")
+
+            try:
+                arm.disable_all()
+                self.state.log_success("Robot hardware confirmed DISABLED on shutdown.", source="Shutdown")
+                print("[Shutdown] Robot hardware confirmed DISABLED.")
+            except Exception as e:
+                self.state.log_error(f"Failed to disable robot motors on shutdown: {e}", exc=e, source="Shutdown")
+                print(f"[Shutdown] Error disabling motors: {e}")
+
+            try:
+                if hasattr(arm, "disconnect"):
+                    arm.disconnect()
+            except Exception as e:
+                pass
+        else:
+            self.state.log("Robot disabled on shutdown (simulated).", source="Shutdown")
+
+        with self.state.lock:
+            self.state.robot_enabled = False
+            self.state.robot_connected = False
 
     def _execute_enable(self) -> None:
         self.state.log("Sending enable command to robot motors...")
@@ -995,6 +1243,13 @@ class RobotWorker(threading.Thread):
                 self.state.robot_enabled = True
 
     def _execute_disable(self) -> None:
+        with self.state.lock:
+            is_en = self.state.robot_enabled
+
+        if is_en:
+            self.state.log("Safe homing arm before disabling motors for safety...")
+            self._execute_safe_home()
+
         self.state.log("Sending disable command to robot motors...")
         with self.state.lock:
             arm = self.state.arm
@@ -1013,6 +1268,7 @@ class RobotWorker(threading.Thread):
             self.state.robot_enabled = False
 
     def _execute_queue(self) -> None:
+        self.state.check_and_reload_if_modified()
         with self.state.lock:
             if not self.state.robot_enabled:
                 self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
@@ -1031,17 +1287,24 @@ class RobotWorker(threading.Thread):
 
         ready_cfg = self.state.cfg.get("robot", {}).get("ready_pose", LOCAL_READY_POSE)
         total = len(items_to_pick)
+        gp_cfg = self.state.cfg.get("grasp_pipeline", {}).get("grasp", {})
+        insertion_depth = float(gp_cfg.get("insertion_depth_m", 0.0))
+        grasp_z_offset = float(gp_cfg.get("grasp_z_offset_m", -0.02))
         self.state.log(f"Starting sequential execution of {total} queued tube(s)...")
 
         for idx, item in enumerate(items_to_pick, start=1):
+            if self.abort_event.is_set():
+                raise ExecutionAborted("Emergency stop requested before starting item.")
             label = item["label"]
             p_base = item["p_base"]
             jaw_width = item["jaw_width_m"]
             with self.state.lock:
                 self.state.status_detail = f"Grasping {label} ({idx}/{total})"
-            self.state.log(f"--- Picking {label} ({idx}/{total}): base=({p_base[0]:.3f}, {p_base[1]:.3f}, {p_base[2]:.3f}) ---")
 
-            xg, yg, zg = float(p_base[0]), float(p_base[1]), float(p_base[2])
+            xg = float(p_base[0]) + insertion_depth
+            yg = float(p_base[1])
+            zg = float(p_base[2]) + grasp_z_offset
+            self.state.log(f"--- Picking {label} ({idx}/{total}): target=({xg:.3f}, {yg:.3f}, {zg:.3f}) [z_offset={grasp_z_offset*100:+.1f}cm] ---")
             rpy_cfg = getattr(self.state, "fixed_grasp_rpy", FIXED_GRASP_RPY)
             pg_cfg = getattr(self.state, "pregrasp_config", PREGRASP_OFFSET_BASE)
 
@@ -1058,47 +1321,60 @@ class RobotWorker(threading.Thread):
             try:
                 # 1. Approach waypoints (if configured)
                 for aw_idx, wp in enumerate(approach_wps, start=1):
+                    if self.abort_event.is_set():
+                        raise ExecutionAborted("Emergency stop requested during approach.")
                     if wp.get("pause", False):
                         prompt = wp.get("prompt", f"Paused at Approach WP #{aw_idx}")
                         with self.state.lock:
                             self.state.status = "paused"
                             self.state.pause_prompt = prompt
                             self.state.pause_event.clear()
-                        self.state.log(f"  ⏸ {prompt} -> Waiting for web 'Resume' click...")
+                        self.state.log(f"  [PAUSED] {prompt} -> Waiting for web 'Resume' click...")
                         self.state.pause_event.wait()
+                        if self.abort_event.is_set():
+                            raise ExecutionAborted("Emergency stop requested during pause.")
                         with self.state.lock:
                             self.state.status = "executing"
                             self.state.status_detail = f"Grasping {label} ({idx}/{total})"
-                        self.state.log("  ▶ Resumed motion.")
+                        self.state.log("  Resumed motion.")
 
                     wx, wy, wz, wr, wpitch, wyaw, wdur = _resolve_waypoint_pose(wp, grasp_xyz, rpy_cfg)
                     self.state.log(f"  Approach WP #{aw_idx}: ({wx:.3f}, {wy:.3f}, {wz:.3f})")
                     if not dry:
                         ctrl.move_to_traj(wx, wy, wz, wr, wpitch, wyaw, duration=wdur)
-                        _wait_motion(ctrl, wdur)
+                        _wait_motion(ctrl, wdur, abort_event=self.abort_event)
                         _handle_waypoint_gripper(driver, wp.get("gripper"), dry_run=dry, ready_open_m=self.state.gripper_ready_open_m)
                     else:
-                        time.sleep(0.2)
+                        if self.abort_event.wait(timeout=0.2):
+                            raise ExecutionAborted("Emergency stop requested.")
 
                 # 2. Pre-Grasp Hover
+                if self.abort_event.is_set():
+                    raise ExecutionAborted("Emergency stop requested before pregrasp.")
                 if pg_cfg.get("enabled", True):
                     pre_dur = float(pg_cfg.get("duration", 5.0))
                     self.state.log(f"  Move to Pregrasp: ({xp:.3f}, {yp:.3f}, {zp:.3f})")
                     if not dry:
                         ctrl.move_to_traj(xp, yp, zp, rxg, ryg, rzg, duration=pre_dur)
-                        _wait_motion(ctrl, pre_dur)
+                        _wait_motion(ctrl, pre_dur, abort_event=self.abort_event)
                     else:
-                        time.sleep(0.3)
+                        if self.abort_event.wait(timeout=0.3):
+                            raise ExecutionAborted("Emergency stop requested.")
 
                 # 3. Move to Grasp Target
+                if self.abort_event.is_set():
+                    raise ExecutionAborted("Emergency stop requested before grasp plunge.")
                 self.state.log(f"  Move to Grasp: ({xg:.3f}, {yg:.3f}, {zg:.3f})")
                 if not dry:
                     ctrl.move_to_traj(xg, yg, zg, rxg, ryg, rzg, duration=GRASP_MOVE_DURATION)
-                    _wait_motion(ctrl, GRASP_MOVE_DURATION)
+                    _wait_motion(ctrl, GRASP_MOVE_DURATION, abort_event=self.abort_event)
                 else:
-                    time.sleep(0.3)
+                    if self.abort_event.wait(timeout=0.3):
+                        raise ExecutionAborted("Emergency stop requested.")
 
                 # 4. Close Gripper
+                if self.abort_event.is_set():
+                    raise ExecutionAborted("Emergency stop requested before gripper close.")
                 fixed_close = self.state.gripper_fixed_close_m
                 close_offset = self.state.gripper_close_offset_m
                 target_jaw = max(0.0, float(fixed_close)) if fixed_close is not None else max(0.0, jaw_width - close_offset)
@@ -1106,42 +1382,56 @@ class RobotWorker(threading.Thread):
                 if not dry and driver is not None:
                     driver.grasp(force=1.5)
                 else:
-                    time.sleep(0.2)
+                    if self.abort_event.wait(timeout=0.2):
+                        raise ExecutionAborted("Emergency stop requested.")
 
                 # 5. Strict Retreat Waypoints (as configured, no extra open_gripper)
+                if self.abort_event.is_set():
+                    raise ExecutionAborted("Emergency stop requested before retreat waypoints.")
                 self.state.log("  Executing Retreat Waypoints...")
                 for rw_idx, wp in enumerate(retreat_wps, start=1):
-                    # Check for pause waypoint
+                    if self.abort_event.is_set():
+                        raise ExecutionAborted("Emergency stop requested during retreat waypoints.")
                     if wp.get("pause", False):
                         prompt = wp.get("prompt", f"Paused at Retreat WP #{rw_idx}")
                         with self.state.lock:
                             self.state.status = "paused"
                             self.state.pause_prompt = prompt
                             self.state.pause_event.clear()
-                        self.state.log(f"  ⏸ {prompt} -> Waiting for web 'Resume' click...")
+                        self.state.log(f"  [PAUSED] {prompt} -> Waiting for web 'Resume' click...")
                         self.state.pause_event.wait()
+                        if self.abort_event.is_set():
+                            raise ExecutionAborted("Emergency stop requested during pause.")
                         with self.state.lock:
                             self.state.status = "executing"
                             self.state.status_detail = f"Grasping {label} ({idx}/{total})"
-                        self.state.log("  ▶ Resumed motion.")
+                        self.state.log("  Resumed motion.")
 
                     wx, wy, wz, wr, wpitch, wyaw, wdur = _resolve_waypoint_pose(wp, grasp_xyz, rpy_cfg)
                     self.state.log(f"  Retreat WP #{rw_idx}: ({wx:.3f}, {wy:.3f}, {wz:.3f})")
                     if not dry:
                         ctrl.move_to_traj(wx, wy, wz, wr, wpitch, wyaw, duration=wdur)
-                        _wait_motion(ctrl, wdur)
+                        _wait_motion(ctrl, wdur, abort_event=self.abort_event)
                         _handle_waypoint_gripper(driver, wp.get("gripper"), dry_run=dry, ready_open_m=self.state.gripper_ready_open_m)
                     else:
-                        time.sleep(0.3)
+                        if self.abort_event.wait(timeout=0.3):
+                            raise ExecutionAborted("Emergency stop requested.")
 
                 # 6. Return to Ready Pose (Approach Waypoint 0) with open_at_ready=True
+                if self.abort_event.is_set():
+                    raise ExecutionAborted("Emergency stop requested before returning to ready pose.")
                 self.state.log("  Returning to Ready Pose...")
-                _move_ready(ctrl, ready_cfg, grasp_driver=driver, open_at_ready=True, dry_run=dry, ready_open_m=self.state.gripper_ready_open_m)
+                _move_ready(ctrl, ready_cfg, grasp_driver=driver, open_at_ready=True, dry_run=dry, ready_open_m=self.state.gripper_ready_open_m, abort_event=self.abort_event)
 
                 # Remove item from state queue
                 with self.state.lock:
                     self.state.queue = [q for q in self.state.queue if q["queue_uid"] != item["queue_uid"]]
 
+            except ExecutionAborted as ea:
+                self.state.log_warning(f"[STOP] Grasping aborted immediately by operator: {ea}")
+                with self.state.lock:
+                    self.state.queue.clear()
+                raise
             except Exception as e:
                 self.state.log_error(f"Grasp execution aborted on {label}: {e}", exc=e, source="RobotWorker")
                 break
@@ -1153,6 +1443,7 @@ class RobotWorker(threading.Thread):
             self.state.log_success("All queued grasps completed successfully!")
 
     def _execute_macro_center(self, tube_id: Optional[int]) -> None:
+        self.state.check_and_reload_if_modified()
         with self.state.lock:
             if not self.state.robot_enabled:
                 self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
@@ -1188,14 +1479,19 @@ class RobotWorker(threading.Thread):
         try:
             if not self.state.dry_run and ctrl is not None:
                 ctrl.move_to_traj(cx, cy, cz, scan_rpy["roll"], scan_rpy["pitch"], scan_rpy["yaw"], duration=3.0)
-                _wait_motion(ctrl, 3.0)
+                _wait_motion(ctrl, 3.0, abort_event=self.abort_event)
             else:
-                time.sleep(0.5)
+                if self.abort_event.wait(timeout=0.5):
+                    raise ExecutionAborted("Emergency stop requested during macro center.")
             self.state.log_success("Macro Centering complete.")
+        except ExecutionAborted as ea:
+            self.state.log_warning(f"[STOP] Macro Centering aborted by Emergency Stop: {ea}")
+            raise
         except Exception as e:
             self.state.log_error(f"Macro Centering failed: {e}", exc=e, source="RobotWorker")
 
     def _execute_safe_home(self) -> None:
+        self.state.check_and_reload_if_modified()
         with self.state.lock:
             if not self.state.robot_enabled:
                 self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
@@ -1230,7 +1526,7 @@ class RobotWorker(threading.Thread):
             except Exception as e:
                 self.state.log_error(f"Safe home motion error: {e}", exc=e, source="RobotWorker")
         else:
-            time.sleep(1.0)
+            time.sleep(0.1)
             self.state.log_success("Safe Home complete (simulated).")
 
         with self.state.lock:
@@ -1238,22 +1534,32 @@ class RobotWorker(threading.Thread):
             self.state.status_detail = "Live Camera Preview"
 
     def _execute_ready_pose(self) -> None:
+        self.state.check_and_reload_if_modified()
         with self.state.lock:
             if not self.state.robot_enabled:
                 self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
                 return
             self.state.status = "executing"
             self.state.status_detail = "Moving to Ready Pose"
-        self.state.log("Moving arm to Ready Pose...")
+            ready_cfg = self.state.cfg.get("robot", {}).get("ready_pose", LOCAL_READY_POSE)
+            rx = float(ready_cfg.get("x", 0.35))
+            ry = float(ready_cfg.get("y", 0.0))
+            rz = float(ready_cfg.get("z", 0.28))
+            rpitch = float(ready_cfg.get("pitch", 0.6))
+            gripper_w = self.state.gripper_ready_open_m
+
+        self.state.log(f"Moving arm to Ready Pose: (x={rx:.3f}, y={ry:.3f}, z={rz:.3f}, pitch={rpitch:.2f}, gripper={gripper_w*100:.1f}cm)...")
 
         ctrl = self.state.controller
         driver = self.state.grasp_driver
         dry = self.state.dry_run or ctrl is None
-        ready_cfg = self.state.cfg.get("robot", {}).get("ready_pose", LOCAL_READY_POSE)
 
         try:
-            _move_ready(ctrl, ready_cfg, grasp_driver=driver, open_at_ready=True, dry_run=dry, ready_open_m=self.state.gripper_ready_open_m)
+            _move_ready(ctrl, ready_cfg, grasp_driver=driver, open_at_ready=True, dry_run=dry, ready_open_m=gripper_w, abort_event=self.abort_event)
             self.state.log_success("Arm returned to Ready Pose.")
+        except ExecutionAborted as ea:
+            self.state.log_warning(f"[STOP] Ready Pose motion aborted by Emergency Stop: {ea}")
+            raise
         except Exception as e:
             self.state.log_error(f"Ready pose motion failed: {e}", exc=e, source="RobotWorker")
 
@@ -1262,6 +1568,7 @@ class RobotWorker(threading.Thread):
             self.state.status_detail = "Live Camera Preview"
 
     def _execute_test_gripper(self, target_width: Any) -> None:
+        self.state.check_and_reload_if_modified()
         with self.state.lock:
             if not self.state.robot_enabled:
                 self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
@@ -1326,6 +1633,7 @@ class VideoStreamHandler(tornado.web.RequestHandler):
 class StatusApiHandler(tornado.web.RequestHandler):
     def get(self) -> None:
         state: SystemState = self.application.settings["system_state"]
+        state.check_and_reload_if_modified()
         with state.lock:
             tubes_summary = [
                 {
@@ -1432,6 +1740,10 @@ class ActionApiHandler(tornado.web.RequestHandler):
             robot_worker.submit("macro_center", int(tube_id) if tube_id is not None else None)
             self.write(json.dumps({"success": True}))
 
+        elif action in ("emergency_stop", "stop"):
+            robot_worker.trigger_emergency_stop()
+            self.write(json.dumps({"success": True}))
+
         elif action == "enable_robot":
             robot_worker.submit("enable_robot")
             self.write(json.dumps({"success": True}))
@@ -1488,6 +1800,7 @@ class WaypointsApiHandler(tornado.web.RequestHandler):
 
     def get(self) -> None:
         state: SystemState = self.application.settings["system_state"]
+        state.check_and_reload_if_modified()
         with state.lock:
             data = {
                 "approach": state.approach_waypoints,
@@ -1544,9 +1857,13 @@ class ConfigApiHandler(tornado.web.RequestHandler):
 
     def get(self) -> None:
         state: SystemState = self.application.settings["system_state"]
+        state.check_and_reload_if_modified()
         with state.lock:
-            with open(state.cfg_path, "r", encoding="utf-8") as f:
-                content = yaml.safe_load(f) or {}
+            try:
+                with open(state.cfg_path, "r", encoding="utf-8") as f:
+                    content = yaml.safe_load(f) or {}
+            except Exception:
+                content = copy.deepcopy(state.cfg)
             rob = content.setdefault("robot", {})
             grp = rob.setdefault("gripper", {})
             grp["ready_open_m"] = state.gripper_ready_open_m
@@ -1600,6 +1917,11 @@ class ConfigApiHandler(tornado.web.RequestHandler):
                 with open(state.cfg_path, "w", encoding="utf-8") as f:
                     yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
+                try:
+                    state.cfg_mtime = state.cfg_path.stat().st_mtime
+                except Exception:
+                    pass
+
                 state.reload_config()
                 state.save_waypoints_to_disk()
                 self.write(json.dumps({"success": True, "message": "Configuration saved successfully."}))
@@ -1616,7 +1938,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>reBot Arm B601 — Pick & Place Web Station</title>
+  <title>reBot Arm B601 - Pick &amp; Place Web Station</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
@@ -1719,21 +2041,55 @@ INDEX_HTML = """<!DOCTYPE html>
     .video-container img { width: 100%; height: 100%; object-fit: contain; }
 
     /* Tubes Button Bar */
-    .tube-buttons-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; min-height: 42px; align-items: center; }
+    .tube-buttons-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 12px;
+      min-height: 48px;
+      align-items: center;
+    }
     .tube-btn {
       background: #2563eb;
-      color: #fff;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 6px;
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      padding: 10px 22px;
+      min-width: 64px;
+      min-height: 44px;
+      border-radius: 8px;
       font-weight: 700;
       cursor: pointer;
-      font-size: 0.95rem;
-      transition: transform 0.1s, background 0.2s;
+      font-size: 1.05rem;
+      letter-spacing: 0.5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+      transition: transform 0.08s ease, background 0.15s ease, box-shadow 0.15s ease;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
     }
-    .tube-btn:hover { background: #1d4ed8; transform: translateY(-2px); }
-    .tube-btn:active { transform: translateY(0); }
-    .tube-btn.queued { background: #059669; }
+    .tube-btn:hover {
+      background: #1d4ed8;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 14px rgba(29, 78, 216, 0.5);
+    }
+    .tube-btn:active {
+      transform: scale(0.92);
+      background: #1e40af;
+      box-shadow: 0 1px 3px rgba(30, 64, 175, 0.4);
+    }
+    .tube-btn.queued {
+      background: #059669;
+      border-color: rgba(52, 211, 153, 0.3);
+      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
+    }
+    .tube-btn.queued:hover {
+      background: #047857;
+      box-shadow: 0 4px 14px rgba(4, 120, 87, 0.5);
+    }
 
     /* Queue List */
     .queue-list {
@@ -1784,6 +2140,20 @@ INDEX_HTML = """<!DOCTYPE html>
     .btn-grasp { background: var(--green); color: #fff; grid-column: span 2; font-size: 1.1rem; }
     .btn-grasp:hover { background: var(--green-hover); }
     .btn-grasp:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-stop {
+      background: #dc2626;
+      color: #fff;
+      grid-column: span 2;
+      font-size: 1.05rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      border: 1px solid #ef4444;
+    }
+    .btn-stop:hover {
+      background: #b91c1c;
+      border-color: #f87171;
+      box-shadow: 0 0 12px rgba(220, 38, 38, 0.45);
+    }
     .btn-enable { background: #059669; color: #fff; }
     .btn-enable:hover { background: #047857; }
     .btn-disable { background: #dc2626; color: #fff; }
@@ -2256,26 +2626,25 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <header>
     <div class="brand">
-      <span>🦾</span>
       <span>reBot Arm B601</span>
       <span style="font-weight: 400; color: var(--text-muted);">|</span>
     </div>
 
     <div class="nav-tabs">
-      <button class="tab-btn active" onclick="switchTab('station')">🎮 Visual Grasping</button>
-      <button class="tab-btn" onclick="switchTab('waypoints')">📍 Waypoints Editor</button>
-      <button class="tab-btn" onclick="switchTab('config')">⚙️ Robot & Camera Config</button>
-      <button class="tab-btn" onclick="switchTab('guide')">📖 User Guide</button>
+      <button class="tab-btn active" onclick="switchTab('station')">Visual Grasping</button>
+      <button class="tab-btn" onclick="switchTab('waypoints')">Waypoints Editor</button>
+      <button class="tab-btn" onclick="switchTab('config')">Robot & Camera Config</button>
+      <button class="tab-btn" onclick="switchTab('guide')">User Guide</button>
     </div>
 
     <div style="display: flex; gap: 10px; align-items: center;">
-      <span id="badge-status" class="status-badge status-live">🟢 LIVE</span>
+      <span id="badge-status" class="status-badge status-live">LIVE</span>
       <div id="badge-enabled-container" class="robot-led-badge" title="Hardware Motor Driver Feedback">
         <span class="led-bulb led-off" id="led-indicator-bulb"></span>
         <span id="badge-enabled-text" style="color: #94a3b8;">ROBOT DISABLED</span>
       </div>
-      <span id="badge-waypoints" class="status-badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid #818cf8; cursor: pointer;" title="Active Robot Waypoints (Click to view & edit)" onclick="switchTab('waypoints')">📍 2 WPs (0 App / 2 Ret)</span>
-      <button class="tab-btn" style="border: 1px solid #3b82f6; color: #60a5fa; background: rgba(59, 130, 246, 0.12); padding: 4px 12px; font-size: 0.8rem; font-weight: 700; border-radius: 999px; cursor: pointer;" onclick="switchTab('guide')" title="Open Quick User Guide">❓ Quick Guide</button>
+      <span id="badge-waypoints" class="status-badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid #818cf8; cursor: pointer;" title="Active Robot Waypoints (Click to view & edit)" onclick="switchTab('waypoints')">2 WPs (0 App / 2 Ret)</span>
+      <button class="tab-btn" style="border: 1px solid #3b82f6; color: #60a5fa; background: rgba(59, 130, 246, 0.12); padding: 4px 12px; font-size: 0.8rem; font-weight: 700; border-radius: 999px; cursor: pointer;" onclick="switchTab('guide')" title="Open Quick User Guide">Quick Guide</button>
       <span id="badge-mode" style="font-size: 0.8rem; color: var(--text-muted);">Connected</span>
     </div>
   </header>
@@ -2334,28 +2703,31 @@ INDEX_HTML = """<!DOCTYPE html>
             <!-- Action Buttons -->
             <div class="actions-grid">
               <button id="btn-resume" class="btn-main btn-resume" onclick="resumeMotion()">
-                <span>⏸</span> RESUME FROM PAUSE
+                RESUME FROM PAUSE
               </button>
               <button id="btn-grasp" class="btn-main btn-grasp" onclick="graspQueue()">
-                <span>▶</span> GRASP QUEUE
+                GRASP QUEUE
+              </button>
+              <button id="btn-stop" class="btn-main btn-stop" onclick="emergencyStop()" title="Emergency Stop: Abort execution, open gripper, return to safe home, and disable motors">
+                EMERGENCY STOP
               </button>
               <button id="btn-enable" class="btn-main btn-enable" onclick="enableRobot()">
-                <span>⚡</span> Enable Robot
+                Enable Robot
               </button>
               <button id="btn-disable" class="btn-main btn-disable" onclick="disableRobot()">
-                <span>🛑</span> Disable Robot
+                Disable Robot
               </button>
               <button class="btn-main btn-center" onclick="macroCenter()">
-                <span>🎯</span> Macro Center
+                Macro Center
               </button>
               <button class="btn-main btn-home" onclick="safeHome()">
-                <span>🏠</span> Safe Home
+                Safe Home
               </button>
               <button class="btn-main btn-ready" onclick="readyPose()">
-                <span>🦾</span> Ready Pose
+                Ready Pose
               </button>
               <button class="btn-main btn-reset" onclick="unfreezeStream()">
-                <span>🔄</span> Reset / Unfreeze
+                Reset / Unfreeze
               </button>
             </div>
           </div>
@@ -2364,34 +2736,33 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="card">
             <div class="card-title" style="flex-wrap: wrap; gap: 8px;">
               <div style="display: flex; align-items: center; gap: 8px;">
-                <span>📟 SYSTEM TELEMETRY &amp; DEBUG LOG</span>
+                <span>SYSTEM TELEMETRY &amp; DEBUG LOG</span>
                 <span id="log-error-pill" class="log-pill log-pill-clean">0 Errors</span>
               </div>
               <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                 <div class="log-filter-group">
                   <button id="filter-all" class="btn-filter active" onclick="setLogFilter('all')">All</button>
-                  <button id="filter-errors" class="btn-filter" onclick="setLogFilter('errors')">⚠️ Errors (<span id="filter-err-count">0</span>)</button>
+                  <button id="filter-errors" class="btn-filter" onclick="setLogFilter('errors')">Errors (<span id="filter-err-count">0</span>)</button>
                 </div>
                 <label style="display:flex; align-items:center; gap:5px; font-size:0.75rem; color:var(--text-muted); cursor:pointer; user-select:none;">
                   <input type="checkbox" id="chk-autoscroll" checked style="width:auto; cursor:pointer;"> Auto-scroll
                 </label>
-                <button class="btn-sm" style="background:#334155; color:#fff;" onclick="copyAllLogs()" title="Copy all logs to clipboard">📋 Copy</button>
-                <button class="btn-sm" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" onclick="clearLogs()" title="Clear logs">🗑️ Clear</button>
-                <button class="btn-sm" style="background:#451a03; color:#f59e0b; border:1px solid #78350f;" onclick="triggerTestError()" title="Simulate an error for debugging test">🧪 Test Error</button>
+                <button class="btn-sm" style="background:#334155; color:#fff;" onclick="copyAllLogs()" title="Copy all logs to clipboard">Copy</button>
+                <button class="btn-sm" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" onclick="clearLogs()" title="Clear logs">Clear</button>
+                <button class="btn-sm" style="background:#451a03; color:#f59e0b; border:1px solid #78350f;" onclick="triggerTestError()" title="Simulate an error for debugging test">Test Error</button>
               </div>
             </div>
 
             <!-- Active Error Banner (Prominent Alert for Debugging) -->
             <div id="active-error-banner" class="active-error-banner" style="display: none;">
               <div class="error-banner-header">
-                <span class="error-banner-icon">🚨</span>
                 <span class="error-banner-title">RUNTIME ERROR DETECTED</span>
                 <span id="error-banner-time" class="error-banner-time"></span>
-                <button class="error-banner-dismiss" onclick="dismissActiveError()" title="Dismiss banner">✕</button>
+                <button class="error-banner-dismiss" onclick="dismissActiveError()" title="Dismiss banner">X</button>
               </div>
               <div id="error-banner-msg" class="error-banner-msg"></div>
               <details id="error-banner-trace-details" class="error-trace-details" style="display: none;">
-                <summary>🔍 View Stack Traceback</summary>
+                <summary>View Stack Traceback</summary>
                 <pre id="error-banner-trace" class="error-trace-pre"></pre>
               </details>
             </div>
@@ -2410,13 +2781,13 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-title">
           <span>MOTION WAYPOINTS EDITOR (APPROACH &amp; RETREAT)</span>
           <div style="display: flex; gap: 8px;">
-            <button class="btn-sm" style="background:#334155; color:#fff;" onclick="loadWaypoints()">🔄 Reload</button>
-            <button class="btn-sm" style="background:var(--green); color:#fff;" onclick="saveWaypointsToDisk()">💾 Save to waypoints.yaml</button>
+            <button class="btn-sm" style="background:#334155; color:#fff;" onclick="loadWaypoints()">Reload</button>
+            <button class="btn-sm" style="background:var(--green); color:#fff;" onclick="saveWaypointsToDisk()">Save to waypoints.yaml</button>
           </div>
         </div>
         <div style="background: #111622; border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <div>
-            <span style="font-weight: 700; color: #818cf8;">📌 Active Robot Configuration:</span>
+            <span style="font-weight: 700; color: #818cf8;">Active Robot Configuration:</span>
             <span style="font-family: monospace; color: #38bdf8; margin-left: 6px;" id="wp-cfg-filename">config/waypoints.yaml</span>
           </div>
           <div style="font-size: 0.8rem; color: var(--text-muted);">
@@ -2433,7 +2804,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <!-- Column 1: Approach Waypoints -->
           <div class="card" style="margin-bottom: 0;">
             <div class="card-title" style="color: #60a5fa;">
-              <span>🛫 APPROACH WAYPOINTS (READY POSE → TARGET)</span>
+              <span>APPROACH WAYPOINTS (READY POSE -> TARGET)</span>
               <span id="approach-count" style="font-size: 0.8rem; color: var(--text-muted);">0 waypoints</span>
             </div>
             
@@ -2510,7 +2881,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <!-- Column 2: Retreat Waypoints -->
           <div class="card" style="margin-bottom: 0;">
             <div class="card-title" style="color: #34d399;">
-              <span>🛬 RETREAT WAYPOINTS (GRASPED → READY POSE)</span>
+              <span>RETREAT WAYPOINTS (GRASPED -> READY POSE)</span>
               <span id="retreat-count" style="font-size: 0.8rem; color: var(--text-muted);">2 waypoints</span>
             </div>
 
@@ -2599,7 +2970,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="config-grid">
           <!-- Camera Settings -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title">📷 CAMERA & FOCUS</div>
+            <div class="card-title">CAMERA & FOCUS</div>
             <div class="form-group">
               <label>Camera Index / Path (camera.id)</label>
               <input type="text" id="cfg-cam-id">
@@ -2623,24 +2994,31 @@ INDEX_HTML = """<!DOCTYPE html>
 
           <!-- Grasping Pipeline Settings -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title">📐 GRASP PLANE & OFFSETS</div>
+            <div class="card-title">GRASP PLANE & OFFSETS</div>
             <div class="form-group">
               <label>Table Z Plane (meters, base frame)</label>
-              <input type="number" step="0.005" id="cfg-table-z">
+              <input type="number" step="0.001" id="cfg-table-z">
             </div>
             <div class="form-group">
               <label>Pre-Grasp Offset (meters)</label>
-              <input type="number" step="0.005" id="cfg-pregrasp-offset">
+              <input type="number" step="0.001" id="cfg-pregrasp-offset">
             </div>
             <div class="form-group">
-              <label>Insertion Depth (meters)</label>
-              <input type="number" step="0.005" id="cfg-insertion-depth">
+              <label>Insertion Depth (meters, X push)</label>
+              <input type="number" step="0.001" id="cfg-insertion-depth">
+            </div>
+            <div class="form-group">
+              <label>Grasp Z Offset / Depth (meters, vertical plunge)</label>
+              <input type="number" step="0.001" id="cfg-grasp-z-offset" placeholder="-0.020">
+              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
+                Vertical plunge depth below table Z (negative descends deeper, e.g. -0.020m = -2cm).
+              </div>
             </div>
           </div>
 
           <!-- Hand-Eye Calibration -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title">🔄 HAND-EYE CALIBRATION</div>
+            <div class="card-title">HAND-EYE CALIBRATION</div>
             <div class="form-group">
               <label>Hand-Eye Result File</label>
               <input type="text" id="cfg-he-file">
@@ -2661,7 +3039,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
           <!-- Ready Pose -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title">🦾 READY POSE</div>
+            <div class="card-title">READY POSE</div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
               <div class="form-group">
                 <label>X (m)</label>
@@ -2684,35 +3062,38 @@ INDEX_HTML = """<!DOCTYPE html>
 
           <!-- Gripper Configuration -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title">🤏 GRIPPER CONFIGURATION</div>
+            <div class="card-title">GRIPPER CONFIGURATION</div>
             <div class="form-group">
               <label>Ready Open Width (meters, max stroke 0.09m)</label>
-              <input type="number" step="0.005" min="0.0" max="0.09" id="cfg-gripper-ready-open" placeholder="0.055">
+              <input type="number" step="0.001" min="0.0" max="0.09" id="cfg-gripper-ready-open" placeholder="0.055">
               <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
                 Width gripper opens to at Ready Pose and approach (0.055m = 5.5cm).
               </div>
             </div>
             <div class="form-group">
               <label>Fixed Close Width (meters, optional)</label>
-              <input type="number" step="0.005" min="0.0" max="0.09" id="cfg-gripper-fixed-close" placeholder="0.030">
+              <input type="number" step="0.001" min="0.0" max="0.09" id="cfg-gripper-fixed-close" placeholder="0.030">
               <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
                 Fixed close target width (0.03m = 3.0cm). Leave blank to use adaptive YOLO detection width.
               </div>
             </div>
             <div class="form-group">
               <label>Close Offset Margin (meters)</label>
-              <input type="number" step="0.002" min="0.0" max="0.05" id="cfg-gripper-close-offset" placeholder="0.010">
+              <input type="number" step="0.001" min="0.0" max="0.05" id="cfg-gripper-close-offset" placeholder="0.010">
               <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
                 Subtracted from YOLO jaw width when closing adaptively (0.01m = 1.0cm).
               </div>
             </div>
             <button class="btn btn-outline" style="width: 100%; margin-top: 6px; font-size: 0.82rem; padding: 7px 12px; border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8;" onclick="testGripperWidth()">
-              🤏 Test Gripper Width Now
+              Test Gripper Width Now
             </button>
           </div>
         </div>
 
-        <button class="btn-save-cfg" onclick="saveConfiguration()">💾 Save Configuration to default.yaml</button>
+        <div style="display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap;">
+          <button class="btn-save-cfg" style="margin-top: 0;" onclick="saveConfiguration(false)">Save Configuration to default.yaml</button>
+          <span id="cfg-sync-status" style="font-size: 0.85rem; color: #10b981; font-weight: 600;">Synced with default.yaml</span>
+        </div>
       </div>
     </div>
 
@@ -2722,14 +3103,14 @@ INDEX_HTML = """<!DOCTYPE html>
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
           <div>
             <h2 style="font-size: 1.3rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
-              <span>📖</span> Station Operator &amp; Quick-Start Guide
+              Station Operator &amp; Quick-Start Guide
             </h2>
             <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 6px;">
               A simple, step-by-step walkthrough for lab operators and engineers to pick test tubes with the reBot Arm B601.
             </p>
           </div>
           <button onclick="switchTab('station')" class="btn-main" style="background: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;">
-            🚀 Open Grasping Station
+            Open Grasping Station
           </button>
         </div>
       </div>
@@ -2737,46 +3118,46 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Quick 3-Step Walkthrough -->
       <div class="card">
         <div class="card-title">
-          <span>🚀 QUICK-START: HOW TO PICK TUBES IN 3 STEPS</span>
+          <span>QUICK-START: HOW TO PICK TUBES IN 3 STEPS</span>
         </div>
         <div class="guide-step-grid">
           
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">1</span>
-              <strong style="color: #60a5fa; font-size: 1rem;">Move Arm to Ready Pose 🦾</strong>
+              <strong style="color: #60a5fa; font-size: 1rem;">Move Arm to Ready Pose</strong>
             </div>
             <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
               When the station starts, the robot holds still for safety. Click the blue <strong>"Ready Pose"</strong> button. The robotic arm smoothly moves above the rack, opens its gripper, and aims the camera directly at the test tubes.
             </p>
             <div style="margin-top: 12px; background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 6px 10px; font-size: 0.8rem; color: #93c5fd;">
-              💡 <em>Tip: Always ensure the workspace is clear before moving to Ready Pose.</em>
+              <em>Tip: Always ensure the workspace is clear before moving to Ready Pose.</em>
             </div>
           </div>
 
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">2</span>
-              <strong style="color: #34d399; font-size: 1rem;">Select Tubes to Pick 🎯</strong>
+              <strong style="color: #34d399; font-size: 1rem;">Select Tubes to Pick</strong>
             </div>
             <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
               Look at the live video stream. Tubes are automatically numbered from left to right (<strong>#1, #2, #3...</strong>). Click the tube buttons in the order you want them picked (e.g. click <strong>#3</strong>, then <strong>#1</strong>). They appear in the <strong>PICKING QUEUE</strong> list.
             </p>
             <div style="margin-top: 12px; background: rgba(16, 185, 129, 0.1); border-left: 3px solid #10b981; padding: 6px 10px; font-size: 0.8rem; color: #6ee7b7;">
-              💡 <em>Tip: Click ✕ on any tube in the queue if you made a mistake, or click "Clear All".</em>
+              <em>Tip: Click X on any tube in the queue if you made a mistake, or click "Clear All".</em>
             </div>
           </div>
 
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">3</span>
-              <strong style="color: #f59e0b; font-size: 1rem;">Click "GRASP QUEUE" ▶</strong>
+              <strong style="color: #f59e0b; font-size: 1rem;">Click "GRASP QUEUE"</strong>
             </div>
             <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
               Click the green <strong>"GRASP QUEUE"</strong> button. The camera freezes to lock coordinates, and the arm automatically hovers (+10cm), descends, clamps the tube, lifts straight up, and tilts away safely. Once finished, it returns to live mode!
             </p>
             <div style="margin-top: 12px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; padding: 6px 10px; font-size: 0.8rem; color: #fde68a;">
-              💡 <em>Tip: Never reach into the robot workspace while the status shows "EXECUTING".</em>
+              <em>Tip: Never reach into the robot workspace while the status shows "EXECUTING".</em>
             </div>
           </div>
 
@@ -2786,7 +3167,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Button Controls Cheat Sheet -->
       <div class="card">
         <div class="card-title">
-          <span>🎮 DASHBOARD BUTTONS CHEAT SHEET</span>
+          <span>DASHBOARD BUTTONS CHEAT SHEET</span>
         </div>
         <table class="guide-table">
           <thead>
@@ -2799,49 +3180,55 @@ INDEX_HTML = """<!DOCTYPE html>
           </thead>
           <tbody>
             <tr>
-              <td><strong>▶ GRASP QUEUE</strong></td>
+              <td><strong>GRASP QUEUE</strong></td>
               <td><span style="color:#10b981; font-weight:700;">Green (Main)</span></td>
               <td>Freezes target coordinates and executes pick-and-retreat sequence for all queued tubes.</td>
               <td>After selecting tubes in the queue.</td>
             </tr>
             <tr>
-              <td><strong>🦾 Ready Pose</strong></td>
+              <td><strong>EMERGENCY STOP</strong></td>
+              <td><span style="color:#ef4444; font-weight:700;">Red (Full Width)</span></td>
+              <td>Immediately halts any ongoing execution, opens gripper to Ready Open Width, returns arm safely to Home pose, and disables motors in strict order.</td>
+              <td>Any time during execution if a problem occurs or immediate abort is required.</td>
+            </tr>
+            <tr>
+              <td><strong>Ready Pose</strong></td>
               <td><span style="color:#60a5fa; font-weight:700;">Blue</span></td>
               <td>Moves arm to overhead observation height and opens gripper.</td>
               <td>First action when starting the station.</td>
             </tr>
             <tr>
-              <td><strong>⚡ Enable Robot</strong></td>
+              <td><strong>Enable Robot</strong></td>
               <td><span style="color:#10b981; font-weight:700;">Green Outline</span></td>
               <td>Sends CAN enable command to arm. The LED indicator turns <strong>glowing green only after the robot driver confirms active torque feedback</strong>.</td>
               <td>If robot was disabled, or after power up.</td>
             </tr>
             <tr>
-              <td><strong>🛑 Disable Robot</strong></td>
+              <td><strong>Disable Robot</strong></td>
               <td><span style="color:#ef4444; font-weight:700;">Red Outline</span></td>
-              <td>Cuts motor power (limp mode) so arm can be guided by hand. The LED indicator turns <strong>dim gray</strong>.</td>
+              <td>Automatically homes the arm safely first, then cuts motor torque (limp mode) to prevent abrupt drops or danger. The LED indicator turns <strong>dim gray</strong>.</td>
               <td>When shutting down or hand-positioning.</td>
             </tr>
             <tr>
-              <td><strong>🏠 Safe Home</strong></td>
+              <td><strong>Safe Home</strong></td>
               <td><span style="color:#f59e0b; font-weight:700;">Amber</span></td>
               <td>Releases gripper and smoothly parks arm at zero position via minimum-jerk path.</td>
               <td>When finishing work or aborting safely.</td>
             </tr>
             <tr>
-              <td><strong>🎯 Macro Center</strong></td>
+              <td><strong>Macro Center</strong></td>
               <td><span style="color:#818cf8; font-weight:700;">Purple</span></td>
               <td>Centers camera optical axis directly over the selected tube.</td>
               <td>To inspect a specific tube from above.</td>
             </tr>
             <tr>
-              <td><strong>❄️ Reset / Unfreeze</strong></td>
+              <td><strong>Reset / Unfreeze</strong></td>
               <td><span style="color:#94a3b8; font-weight:700;">Slate Gray</span></td>
               <td>Unfreezes video feed and returns camera to live scanning mode.</td>
               <td>If you want to cancel a frozen scan.</td>
             </tr>
             <tr>
-              <td><strong>⏸ Resume from Pause</strong></td>
+              <td><strong>Resume from Pause</strong></td>
               <td><span style="color:#ef4444; font-weight:700;">Red Flashing</span></td>
               <td>Resumes motion if an approach or retreat waypoint has a pause trigger.</td>
               <td>Only visible during programmed pauses.</td>
@@ -2853,29 +3240,29 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Navigation Tabs Guide -->
       <div class="card">
         <div class="card-title">
-          <span>📑 THE 4 DASHBOARD TABS EXPLAINED</span>
+          <span>THE 4 DASHBOARD TABS EXPLAINED</span>
         </div>
         <div class="guide-step-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
           <div class="guide-step-card">
-            <strong style="color: #60a5fa;">🎮 Visual Grasping</strong>
+            <strong style="color: #60a5fa;">Visual Grasping</strong>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
               Main operational view: live video stream, detected tubes, picking queue, motion controls, and system telemetry log.
             </p>
           </div>
           <div class="guide-step-card">
-            <strong style="color: #818cf8;">📍 Waypoints Editor</strong>
+            <strong style="color: #818cf8;">Waypoints Editor</strong>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
               Add, inspect, or delete approach and retreat waypoints (e.g. lift height, tilt angles). Automatically saves to <code>config/waypoints.yaml</code>.
             </p>
           </div>
           <div class="guide-step-card">
-            <strong style="color: #34d399;">⚙️ Robot &amp; Camera Config</strong>
+            <strong style="color: #34d399;">Robot &amp; Camera Config</strong>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
               Adjust camera focus, table Z height, pre-grasp clearances, and ready pose coordinates without modifying source code. Saves to <code>config/default.yaml</code>.
             </p>
           </div>
           <div class="guide-step-card">
-            <strong style="color: #fbbf24;">📖 User Guide</strong>
+            <strong style="color: #fbbf24;">User Guide</strong>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
               This quick-start reference guide! Always available for operators, lab technicians, and new engineers.
             </p>
@@ -2886,7 +3273,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <!-- Frequently Asked Questions -->
       <div class="card" style="margin-bottom: 0;">
         <div class="card-title">
-          <span>❓ FREQUENTLY ASKED QUESTIONS &amp; SAFETY</span>
+          <span>FREQUENTLY ASKED QUESTIONS &amp; SAFETY</span>
         </div>
         <div class="guide-faq-grid">
           <div class="guide-faq-card">
@@ -2915,9 +3302,9 @@ INDEX_HTML = """<!DOCTYPE html>
           </div>
         </div>
         <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--card-border); font-size: 0.82rem; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
-          <span>📄 Complete documentation file available at: <code>docs/WEB_GUI_USER_GUIDE.md</code></span>
+          <span>Complete documentation file available at: <code>docs/WEB_GUI_USER_GUIDE.md</code></span>
           <button onclick="switchTab('station')" class="btn-main" style="background: transparent; border: 1px solid var(--card-border); color: #cbd5e1; padding: 4px 12px; border-radius: 4px; cursor: pointer;">
-            Back to Station ➔
+            Back to Station
           </button>
         </div>
       </div>
@@ -2934,6 +3321,7 @@ INDEX_HTML = """<!DOCTYPE html>
     function switchTab(tabId) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      try { sessionStorage.setItem('active_tab', tabId); } catch(e) {}
       if (tabId === 'station') {
         document.querySelector('.nav-tabs .tab-btn:nth-child(1)').classList.add('active');
         document.getElementById('tab-station').classList.add('active');
@@ -2983,7 +3371,7 @@ INDEX_HTML = """<!DOCTYPE html>
           // Green glowing LED (Driver Hardware Feedback Confirmed)
           if (bulb) bulb.className = 'led-bulb led-on';
           if (badgeText) {
-            badgeText.innerText = '⚡ ROBOT ENABLED';
+            badgeText.innerText = 'ROBOT ENABLED';
             badgeText.style.color = '#10b981';
           }
           if (badgeContainer) {
@@ -3004,7 +3392,7 @@ INDEX_HTML = """<!DOCTYPE html>
           // Dim Gray LED (Torque Off / Driver Disabled / No Feedback)
           if (bulb) bulb.className = 'led-bulb led-off';
           if (badgeText) {
-            badgeText.innerText = '⚪ ROBOT DISABLED';
+            badgeText.innerText = 'ROBOT DISABLED';
             badgeText.style.color = '#94a3b8';
           }
           if (badgeContainer) {
@@ -3088,45 +3476,87 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
+    let lastTubesBarHtml = null;
     function renderTubesBar(tubes, queue) {
       const container = document.getElementById('tubes-bar');
-      document.getElementById('tubes-count').innerText = `${tubes.length} tubes detected`;
+      const countEl = document.getElementById('tubes-count');
+      if (countEl) countEl.innerText = `${tubes.length} tube${tubes.length === 1 ? '' : 's'} detected`;
       if (tubes.length === 0) {
-        container.innerHTML = `<span class="empty-queue-msg">Scanning table...</span>`;
+        const emptyHtml = `<span class="empty-queue-msg">Scanning table...</span>`;
+        if (lastTubesBarHtml !== emptyHtml) {
+          container.innerHTML = emptyHtml;
+          lastTubesBarHtml = emptyHtml;
+        }
         return;
       }
 
-      const queuedIds = queue.map(q => q.tube_id);
-      container.innerHTML = tubes.map(t => {
-        const isQueued = queuedIds.includes(t.id);
+      const queuedIds = new Set(queue.map(q => q.tube_id));
+      const newHtml = tubes.map(t => {
+        const isQueued = queuedIds.has(t.id);
         const cls = isQueued ? 'tube-btn queued' : 'tube-btn';
-        return `<button class="${cls}" onclick="enqueueTube(${t.id})">#${t.id}</button>`;
+        const title = isQueued ? `Tube #${t.id} (In Queue - click to add another)` : `Click to add Tube #${t.id} to picking queue`;
+        return `<button type="button" class="${cls}" data-tube-id="${t.id}" onclick="enqueueTube(${t.id})" title="${title}">#${t.id}</button>`;
       }).join('');
+
+      // ONLY mutate DOM when buttons or queued status actually change.
+      // This prevents destroying active button DOM elements mid-click during the 200ms poll cycle!
+      if (newHtml !== lastTubesBarHtml) {
+        container.innerHTML = newHtml;
+        lastTubesBarHtml = newHtml;
+      }
     }
 
+    let lastQueueHtml = null;
     function renderQueue(queue) {
       const container = document.getElementById('queue-box');
       if (queue.length === 0) {
-        container.innerHTML = `<span class="empty-queue-msg">No tubes queued. Click buttons above to add.</span>`;
+        const emptyHtml = `<span class="empty-queue-msg">No tubes queued. Click buttons above to add.</span>`;
+        if (lastQueueHtml !== emptyHtml) {
+          container.innerHTML = emptyHtml;
+          lastQueueHtml = emptyHtml;
+        }
         return;
       }
-      container.innerHTML = queue.map((item, idx) => {
+      const newHtml = queue.map((item, idx) => {
         return `
           <div class="queue-item">
             <span class="queue-item-info">${idx + 1}. ${item.label}</span>
             <span class="queue-item-coord">Base: (${item.x}, ${item.y}, ${item.z})</span>
-            <button class="queue-item-remove" onclick="dequeueItem(${item.queue_uid})">✕</button>
+            <button type="button" class="queue-item-remove" onclick="dequeueItem(${item.queue_uid})" title="Remove item">X</button>
           </div>
         `;
       }).join('');
+
+      if (newHtml !== lastQueueHtml) {
+        container.innerHTML = newHtml;
+        lastQueueHtml = newHtml;
+      }
     }
 
+    let isEnqueuing = false;
     async function enqueueTube(tubeId) {
-      await fetch('/api/queue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'add', tube_id: tubeId })
-      });
+      if (isEnqueuing) return;
+      isEnqueuing = true;
+
+      // Instant optimistic UI feedback: visually depress and mark queued in 0ms
+      const btn = document.querySelector(`.tube-btn[data-tube-id="${tubeId}"]`);
+      if (btn) {
+        btn.classList.add('queued');
+        btn.style.transform = 'scale(0.92)';
+        setTimeout(() => { if (btn) btn.style.transform = ''; }, 120);
+      }
+
+      try {
+        await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', tube_id: tubeId })
+        });
+      } catch (err) {
+        console.error("Failed to enqueue tube:", err);
+      } finally {
+        setTimeout(() => { isEnqueuing = false; }, 80);
+      }
       updateState();
     }
 
@@ -3155,6 +3585,24 @@ INDEX_HTML = """<!DOCTYPE html>
         body: JSON.stringify({ action: 'grasp' })
       });
       updateState();
+    }
+
+    async function emergencyStop() {
+      const btn = document.getElementById('btn-stop');
+      if (btn) {
+        btn.style.transform = 'scale(0.96)';
+        setTimeout(() => { if (btn) btn.style.transform = ''; }, 150);
+      }
+      try {
+        await fetch('/api/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'emergency_stop' })
+        });
+      } catch (err) {
+        console.error("Failed to send emergency stop command:", err);
+      }
+      setTimeout(updateState, 100);
     }
 
     async function macroCenter() {
@@ -3215,7 +3663,7 @@ INDEX_HTML = """<!DOCTYPE html>
       if (bulb) bulb.className = 'led-bulb led-pending';
       if (cardBulb) cardBulb.className = 'led-bulb led-pending';
       if (badgeText) {
-        badgeText.innerText = '⚡ VERIFYING FEEDBACK...';
+        badgeText.innerText = 'VERIFYING FEEDBACK...';
         badgeText.style.color = '#f59e0b';
       }
       if (cardText) {
@@ -3303,7 +3751,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
         const badgeLabel = level === 'error' ? 'ERR' : (level === 'warning' ? 'WARN' : (level === 'success' ? 'OK' : 'INFO'));
         const traceHtml = trace
-          ? `<details class="log-trace-details"><summary>🔍 View Stack Trace</summary><pre class="log-trace-pre">${escapeHtml(trace)}</pre></details>`
+          ? `<details class="log-trace-details"><summary>View Stack Trace</summary><pre class="log-trace-pre">${escapeHtml(trace)}</pre></details>`
           : '';
 
         return `
@@ -3410,7 +3858,7 @@ INDEX_HTML = """<!DOCTYPE html>
       const badge = document.getElementById('badge-waypoints');
       if (badge) {
         const total = (appCount || 0) + (retCount || 0);
-        badge.innerText = `📍 ${total} WPs (${appCount || 0} App / ${retCount || 0} Ret)`;
+        badge.innerText = `${total} WPs (${appCount || 0} App / ${retCount || 0} Ret)`;
       }
     }
 
@@ -3439,7 +3887,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const rpyText = `RPY: [${wp.roll ?? 0}, ${wp.pitch ?? 0}, ${wp.yaw ?? 0}] rad`;
         const durText = `${wp.duration ?? 2.0}s`;
         const gripText = wp.gripper ? ` | Grip: ${wp.gripper}` : '';
-        const pauseText = wp.pause ? ` | ⏸ Pause` : '';
+        const pauseText = wp.pause ? ` | Pause` : '';
 
         return `
           <div class="wp-item-row">
@@ -3447,7 +3895,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <div><strong>#${idx + 1}</strong> ${modeBadge} <span style="font-family:monospace; color:#38bdf8;">${posText}</span></div>
               <div style="font-size:0.75rem; color:var(--text-muted);">${rpyText} | ${durText}${gripText}${pauseText}</div>
             </div>
-            <button class="queue-item-remove" onclick="removeWaypoint('${type}', ${idx})" title="Remove waypoint">✕</button>
+            <button class="queue-item-remove" onclick="removeWaypoint('${type}', ${idx})" title="Remove waypoint">X</button>
           </div>
         `;
       }).join('');
@@ -3543,6 +3991,35 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
+    function parseNum(id, fallback) {
+      const el = document.getElementById(id);
+      if (!el || el.value === "" || el.value === null || el.value === undefined) return fallback;
+      const v = parseFloat(el.value);
+      return isNaN(v) ? fallback : v;
+    }
+
+    let cfgDebounceTimer = null;
+    function onConfigInputChange() {
+      const statusEl = document.getElementById('cfg-sync-status');
+      if (statusEl) {
+        statusEl.innerText = "Saving changes to default.yaml...";
+        statusEl.style.color = "#f59e0b";
+      }
+      clearTimeout(cfgDebounceTimer);
+      cfgDebounceTimer = setTimeout(() => {
+        saveConfiguration(true);
+      }, 350);
+    }
+
+    function initConfigListeners() {
+      document.querySelectorAll('#tab-config input, #tab-config select').forEach(el => {
+        el.removeEventListener('change', onConfigInputChange);
+        el.removeEventListener('blur', onConfigInputChange);
+        el.addEventListener('change', onConfigInputChange);
+        el.addEventListener('blur', onConfigInputChange);
+      });
+    }
+
     // Load Configuration into form
     async function loadConfiguration() {
       try {
@@ -3559,6 +4036,7 @@ INDEX_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-table-z').value = gp.table_z_m ?? 0.17;
         document.getElementById('cfg-pregrasp-offset').value = gp.pregrasp_offset_m ?? 0.15;
         document.getElementById('cfg-insertion-depth').value = gp.insertion_depth_m ?? 0.0;
+        document.getElementById('cfg-grasp-z-offset').value = gp.grasp_z_offset_m ?? -0.02;
 
         const cal = cfg.calibration || {};
         document.getElementById('cfg-he-file').value = cal.hand_eye_file ?? '';
@@ -3578,45 +4056,52 @@ INDEX_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-gripper-fixed-close').value = grp.fixed_close_m ?? 0.030;
         document.getElementById('cfg-gripper-close-offset').value = grp.close_offset_m ?? 0.010;
 
+        const statusEl = document.getElementById('cfg-sync-status');
+        if (statusEl) {
+          statusEl.innerText = "Synced with default.yaml";
+          statusEl.style.color = "#10b981";
+        }
       } catch (err) {
         console.error("Failed to load config", err);
       }
     }
 
-    async function saveConfiguration() {
+    async function saveConfiguration(silent = false) {
+      const statusEl = document.getElementById('cfg-sync-status');
       const payload = {
         camera: {
           id: document.getElementById('cfg-cam-id').value,
-          focus: parseInt(document.getElementById('cfg-cam-focus').value) || 0,
+          focus: parseNum('cfg-cam-focus', 0),
           autofocus: document.getElementById('cfg-cam-autofocus').value === 'true',
           intrinsics_file: document.getElementById('cfg-cam-intrinsics').value,
         },
         grasp_pipeline: {
           grasp: {
-            table_z_m: parseFloat(document.getElementById('cfg-table-z').value) || 0.17,
-            pregrasp_offset_m: parseFloat(document.getElementById('cfg-pregrasp-offset').value) || 0.15,
-            insertion_depth_m: parseFloat(document.getElementById('cfg-insertion-depth').value) || 0.0,
+            table_z_m: parseNum('cfg-table-z', 0.17),
+            pregrasp_offset_m: parseNum('cfg-pregrasp-offset', 0.15),
+            insertion_depth_m: parseNum('cfg-insertion-depth', 0.0),
+            grasp_z_offset_m: parseNum('cfg-grasp-z-offset', -0.02),
           }
         },
         calibration: {
           hand_eye_file: document.getElementById('cfg-he-file').value,
           hand_eye_compensation_m: {
-            x: parseFloat(document.getElementById('cfg-he-comp-x').value) || 0.0,
-            y: parseFloat(document.getElementById('cfg-he-comp-y').value) || 0.0,
-            z: parseFloat(document.getElementById('cfg-he-comp-z').value) || 0.0,
+            x: parseNum('cfg-he-comp-x', 0.0),
+            y: parseNum('cfg-he-comp-y', 0.0),
+            z: parseNum('cfg-he-comp-z', 0.0),
           }
         },
         robot: {
           ready_pose: {
-            x: parseFloat(document.getElementById('cfg-rp-x').value) || 0.3,
-            y: parseFloat(document.getElementById('cfg-rp-y').value) || 0.0,
-            z: parseFloat(document.getElementById('cfg-rp-z').value) || 0.3,
-            pitch: parseFloat(document.getElementById('cfg-rp-pitch').value) || 0.7,
+            x: parseNum('cfg-rp-x', 0.3),
+            y: parseNum('cfg-rp-y', 0.0),
+            z: parseNum('cfg-rp-z', 0.3),
+            pitch: parseNum('cfg-rp-pitch', 0.7),
           },
           gripper: {
-            ready_open_m: parseFloat(document.getElementById('cfg-gripper-ready-open').value) || 0.055,
-            fixed_close_m: document.getElementById('cfg-gripper-fixed-close').value !== "" ? parseFloat(document.getElementById('cfg-gripper-fixed-close').value) : null,
-            close_offset_m: parseFloat(document.getElementById('cfg-gripper-close-offset').value) || 0.010,
+            ready_open_m: parseNum('cfg-gripper-ready-open', 0.055),
+            fixed_close_m: document.getElementById('cfg-gripper-fixed-close').value.trim() !== "" ? parseNum('cfg-gripper-fixed-close', null) : null,
+            close_offset_m: parseNum('cfg-gripper-close-offset', 0.010),
           }
         }
       };
@@ -3629,12 +4114,27 @@ INDEX_HTML = """<!DOCTYPE html>
         });
         const data = await res.json();
         if (data.success) {
-          showToast("Configuration Saved to default.yaml!");
+          const now = new Date().toLocaleTimeString();
+          if (statusEl) {
+            statusEl.innerText = `Synced with default.yaml (${now})`;
+            statusEl.style.color = "#10b981";
+          }
+          if (!silent) {
+            showToast("Configuration Saved to default.yaml!");
+          }
         } else {
-          alert("Error saving: " + data.error);
+          if (statusEl) {
+            statusEl.innerText = `Error saving: ${data.error || 'Server error'}`;
+            statusEl.style.color = "#ef4444";
+          }
+          if (!silent) alert("Error saving: " + data.error);
         }
       } catch (err) {
-        alert("Failed to save config: " + err);
+        if (statusEl) {
+          statusEl.innerText = `Failed to save: ${err}`;
+          statusEl.style.color = "#ef4444";
+        }
+        if (!silent) alert("Failed to save config: " + err);
       }
     }
 
@@ -3672,6 +4172,16 @@ INDEX_HTML = """<!DOCTYPE html>
     setInterval(updateState, 200);
     updateState();
     loadWaypoints();
+    loadConfiguration().then(() => {
+      initConfigListeners();
+    });
+
+    try {
+      const savedTab = sessionStorage.getItem('active_tab');
+      if (savedTab && ['station', 'waypoints', 'config', 'guide'].includes(savedTab)) {
+        switchTab(savedTab);
+      }
+    } catch(e) {}
   </script>
 </body>
 </html>
@@ -3680,6 +4190,8 @@ INDEX_HTML = """<!DOCTYPE html>
 
 class MainIndexHandler(tornado.web.RequestHandler):
     def get(self) -> None:
+        state: SystemState = self.application.settings["system_state"]
+        state.check_and_reload_if_modified()
         self.set_header("Content-Type", "text/html")
         self.write(INDEX_HTML)
 
@@ -3740,15 +4252,39 @@ def main() -> int:
     print(f"  -> Dry Run Mode:    {args.dry_run}")
     print("=" * 60 + "\n")
 
+    shutdown_done = False
+
+    def _shutdown_handler(sig=None, frame=None) -> None:
+        nonlocal shutdown_done
+        if shutdown_done:
+            return
+        shutdown_done = True
+        print("\n[Shutdown] Terminal interrupt received (Ctrl+C). Initiating clean shutdown...")
+        print("[Shutdown] Disabling robot motors and stopping workers...")
+        try:
+            robot_worker.shutdown()
+        except Exception as e:
+            print(f"[Shutdown] Error during robot shutdown: {e}")
+        vision_worker.running = False
+        try:
+            tornado.ioloop.IOLoop.current().add_callback_from_signal(tornado.ioloop.IOLoop.current().stop)
+        except Exception:
+            pass
+        vision_worker.join(timeout=1.5)
+        if robot_worker.is_alive():
+            robot_worker.join(timeout=1.5)
+        print("[Shutdown] Robot confirmed disabled. Server shutdown complete.\n")
+
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    atexit.register(_shutdown_handler)
+
     try:
         tornado.ioloop.IOLoop.current().start()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
-        vision_worker.running = False
-        robot_worker.running = False
-        vision_worker.join(timeout=1.0)
-        robot_worker.join(timeout=1.0)
-        print("Done.")
+        _shutdown_handler()
+    finally:
+        _shutdown_handler()
 
     return 0
 
