@@ -1224,11 +1224,17 @@ class RobotWorker(threading.Thread):
 
                 action, data = self.command_queue.popleft()
 
-                # Block robot motions if robot is disabled
+                # Block robot motions if robot is disabled or in teach mode
                 if action in ("grasp_queue", "macro_center", "safe_home", "ready_pose", "test_gripper"):
                     with self.state.lock:
                         if not self.state.robot_enabled:
                             self.state.log_warning("Robot disabled. Enable robot first.", source="RobotWorker")
+                            if self.state.status == "frozen":
+                                self.state.status = "live"
+                                self.state.status_detail = "Live Camera Preview"
+                            continue
+                        if self.state.teach_mode_active:
+                            self.state.log_warning("Teach Mode is active. Stop Teach Mode before executing automated motions.", source="RobotWorker")
                             if self.state.status == "frozen":
                                 self.state.status = "live"
                                 self.state.status_detail = "Live Camera Preview"
@@ -1373,8 +1379,12 @@ class RobotWorker(threading.Thread):
     def _execute_disable(self) -> None:
         with self.state.lock:
             is_en = self.state.robot_enabled
+            is_teach = self.state.teach_mode_active
 
-        if is_en:
+        if is_teach:
+            self.state.log("Exiting Teach Mode and safe-homing arm before disabling motors for safety...")
+            self._execute_stop_teach_mode()
+        elif is_en:
             self.state.log("Safe homing arm before disabling motors for safety...")
             self._execute_safe_home()
 
@@ -1394,6 +1404,7 @@ class RobotWorker(threading.Thread):
 
         with self.state.lock:
             self.state.robot_enabled = False
+            self.state.teach_mode_active = False
 
     def _execute_queue(self) -> None:
         self.state.check_and_reload_if_modified()
@@ -1761,6 +1772,71 @@ class RobotWorker(threading.Thread):
             self.state.status_detail = "Teach Mode Active (Arm Floating)"
         self.state.log_success("[TEACH] Gravity compensation active. You can now move the arm by hand.")
 
+    def _safe_home_teach(
+        self,
+        gc: Any,
+        arm: Any,
+        max_vel: float = 0.4,
+        send_freq: float = 50.0,
+        settle: float = 0.3,
+        timeout: float = 15.0,
+    ) -> None:
+        """
+        Executes smooth minimum-jerk homing trajectory in MIT mode with gravity feedforward,
+        checking self.abort_event at every step for instantaneous Emergency Stop (<1ms).
+        """
+        if self.abort_event.is_set():
+            raise ExecutionAborted("Emergency stop requested before teach homing.")
+
+        robot = getattr(gc, "rebotarm", arm)
+        if robot is None:
+            return
+
+        q_hold = robot.arm.get_positions().copy()
+        n = getattr(robot.arm, "num_joints", len(q_hold))
+        home = np.zeros(n)
+        kp = getattr(gc, "_hold_kp", getattr(robot.arm, "_mit_kp", None))
+        kd = getattr(gc, "_hold_kd", getattr(robot.arm, "_mit_kd", None))
+        calc_tau = getattr(gc, "_gravity_comp_torque", None)
+
+        if kp is not None and kd is not None:
+            tau_hold = calc_tau(q_hold) if calc_tau is not None else np.zeros(n)
+            robot.arm.send_mit(q_hold, vel=np.zeros(n), kp=kp, kd=kd, tau=tau_hold)
+            if getattr(robot, "has_gripper", False):
+                robot.gripper.send_mit(robot.gripper.get_positions())
+
+        if self.abort_event.wait(timeout=settle):
+            raise ExecutionAborted("Emergency stop requested during teach homing stabilization.")
+
+        q_err = np.abs(home - q_hold)
+        max_err = float(np.max(q_err)) if len(q_err) > 0 else 0.0
+        if max_err < 0.01:
+            return
+
+        t_ramp = max_err / max_vel
+        t_total = t_ramp * 2.0
+        dt_send = 1.0 / send_freq
+        num_steps = max(2, int(t_total / dt_send))
+        interval = t_total / num_steps
+
+        deadline = time.monotonic() + timeout
+        for i in range(num_steps):
+            if self.abort_event.is_set():
+                raise ExecutionAborted("Emergency stop requested during teach homing.")
+            if time.monotonic() > deadline:
+                break
+
+            t = (i + 1) * interval
+            s = 10.0 * (t / t_total) ** 3 - 15.0 * (t / t_total) ** 4 + 6.0 * (t / t_total) ** 5
+            s = min(max(s, 0.0), 1.0)
+            q_target = q_hold + s * (home - q_hold)
+            tau_g = calc_tau(q_target) if calc_tau is not None else np.zeros(n)
+            if kp is not None and kd is not None:
+                robot.arm.send_mit(q_target, vel=np.zeros(n), kp=kp, kd=kd, tau=tau_g)
+
+            if self.abort_event.wait(timeout=interval):
+                raise ExecutionAborted("Emergency stop requested during teach homing.")
+
     def _execute_stop_teach_mode(self) -> None:
         with self.state.lock:
             if not self.state.teach_mode_active:
@@ -1774,16 +1850,15 @@ class RobotWorker(threading.Thread):
             driver = self.state.grasp_driver
 
         self.state.log("[TEACH] Deactivating Teach Mode. Returning arm safely to Home...")
-        if not dry and arm is not None:
-            try:
+        try:
+            if not dry and arm is not None:
                 # Step 1: Smoothly safe_home() using GravityCompensation directly in MIT mode
                 if gc is not None:
                     if getattr(gc, "_running", False):
                         gc.end()
-                    if hasattr(gc, "safe_home"):
-                        self.state.log("[TEACH] Executing smooth safe_home() trajectory from taught pose...")
-                        gc.safe_home(max_vel=0.4, send_freq=50.0, settle=0.5, timeout=15.0)
-                        self.state.log_success("[TEACH] Safe Home reached. Arm is at joint zero configuration.")
+                    self.state.log("[TEACH] Executing smooth safe_home() trajectory from taught pose...")
+                    self._safe_home_teach(gc, arm)
+                    self.state.log_success("[TEACH] Safe Home reached. Arm is at joint zero configuration.")
                 else:
                     # Fallback if compliant MIT was used without GravityCompensation
                     if ctrl is not None:
@@ -1837,17 +1912,35 @@ class RobotWorker(threading.Thread):
                         arm.start_control_loop(ctrl._loop_cb)
                     ctrl._running = True
 
-            except Exception as e:
-                self.state.log_error(f"[TEACH] Error during teach mode deactivation/homing: {e}", exc=e, source="TeachMode")
-        else:
-            time.sleep(0.2)
-            self.state.log_success("[TEACH] [Dry Run] Arm smoothly returned to Safe Home.")
+            else:
+                for _ in range(10):
+                    if self.abort_event.wait(timeout=0.03):
+                        raise ExecutionAborted("Emergency stop requested during teach homing.")
+                self.state.log_success("[TEACH] [Dry Run] Arm smoothly returned to Safe Home.")
 
-        with self.state.lock:
-            self.state.teach_mode_active = False
-            self.state.status = "live"
-            self.state.status_detail = "Live Camera Preview"
-        self.state.log_success("[TEACH] Teach Mode deactivated. Arm safely homed.")
+            with self.state.lock:
+                self.state.teach_mode_active = False
+                self.state.status = "live"
+                self.state.status_detail = "Live Camera Preview"
+            self.state.log_success("[TEACH] Teach Mode deactivated. Arm safely homed.")
+
+        except ExecutionAborted as ea:
+            with self.state.lock:
+                self.state.teach_mode_active = False
+                self.state.gravity_controller = None
+            if gc is not None and getattr(gc, "_running", False):
+                try:
+                    gc.end()
+                except Exception:
+                    pass
+            self.state.log_warning(f"[STOP] Teach homing aborted by Emergency Stop: {ea}")
+            raise
+        except Exception as e:
+            self.state.log_error(f"[TEACH] Error during teach mode deactivation/homing: {e}", exc=e, source="TeachMode")
+            with self.state.lock:
+                self.state.teach_mode_active = False
+                self.state.status = "live"
+                self.state.status_detail = "Live Camera Preview"
 
 
 # ==============================================================================
@@ -1974,12 +2067,16 @@ class ActionApiHandler(tornado.web.RequestHandler):
 
         action = body.get("action")
 
-        # Block motion executions if robot is disabled
+        # Block motion executions if robot is disabled or in teach mode
         if action in ("grasp", "macro_center", "safe_home", "ready_pose", "test_gripper"):
             with state.lock:
                 if not state.robot_enabled:
                     state.log_warning("Robot disabled. Enable robot first.", source="RobotControl")
                     self.write(json.dumps({"success": False, "error": "Robot disabled. Enable robot first."}))
+                    return
+                if state.teach_mode_active:
+                    state.log_warning("Teach Mode is active. Stop Teach Mode before executing automated motions.", source="RobotControl")
+                    self.write(json.dumps({"success": False, "error": "Teach Mode is active. Stop Teach Mode first."}))
                     return
 
         if action == "grasp":
@@ -2645,7 +2742,7 @@ INDEX_HTML = """<!DOCTYPE html>
       margin-left: -24px;
       margin-top: -24px;
       border-radius: 50%;
-      border: 2px solid var(--accent);
+      border: 2px solid var(--primary);
       background: rgba(10, 132, 255, 0.25);
       box-shadow: 0 0 14px rgba(10, 132, 255, 0.6);
       pointer-events: none;
@@ -2655,7 +2752,7 @@ INDEX_HTML = """<!DOCTYPE html>
       position: absolute;
       transform: translate(-50%, -100%);
       background: rgba(15, 23, 42, 0.92);
-      border: 1px solid var(--accent);
+      border: 1px solid var(--primary);
       color: #fff;
       font-size: 0.78rem;
       font-weight: 600;

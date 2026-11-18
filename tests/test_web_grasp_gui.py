@@ -20,6 +20,7 @@ import tornado.testing
 import yaml
 
 from scripts.web_grasp_gui import (
+    ExecutionAborted,
     FIXED_GRASP_RPY,
     LOCAL_READY_POSE,
     RETREAT_WAYPOINTS,
@@ -849,11 +850,12 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         self.state.teach_mode_active = True
         self.state.gravity_controller = gc_mock
 
-        self.robot_worker._execute_stop_teach_mode()
+        with unittest.mock.patch.object(self.robot_worker, "_safe_home_teach") as mock_safe_home_teach:
+            self.robot_worker._execute_stop_teach_mode()
+            mock_safe_home_teach.assert_called_once_with(gc_mock, arm_mock)
 
-        # 1. gc.end() and gc.safe_home() must be called
+        # 1. gc.end() must be called, controller and state cleared
         gc_mock.end.assert_called_once()
-        gc_mock.safe_home.assert_called_once_with(max_vel=0.4, send_freq=50.0, settle=0.5, timeout=15.0)
         self.assertIsNone(self.state.gravity_controller)
         self.assertFalse(self.state.teach_mode_active)
 
@@ -1092,6 +1094,74 @@ class TestLeftToRightNumberingAndContinuousFeed(unittest.TestCase):
         self.assertTrue(any("target=(0.350, -0.090, 0.150)" in l["text"] for l in self.state.logs))
         self.assertEqual(len(self.state.queue), 0)
         self.assertEqual(self.state.status, "live")
+
+
+class TestTeachModeEdgeCases(tornado.testing.AsyncHTTPTestCase):
+    def get_app(self) -> tornado.web.Application:
+        self.cfg_path = PROJECT_ROOT / "config" / "default.yaml"
+        self.state = SystemState(self.cfg_path, dry_run=True)
+        self.state.robot_enabled = True
+        self.robot_worker = RobotWorker(self.state)
+        return make_app(self.state, self.robot_worker)
+
+    def test_automated_motions_blocked_during_teach_mode(self) -> None:
+        """Automated motions (grasp, macro_center, safe_home, ready_pose, test_gripper) are blocked with warning when Teach Mode is active."""
+        self.state.teach_mode_active = True
+
+        for act in ("grasp", "macro_center", "safe_home", "ready_pose", "test_gripper"):
+            res = self.fetch("/api/action", method="POST", headers={"Content-Type": "application/json"}, body=json.dumps({"action": act}))
+            self.assertEqual(res.code, 200)
+            data = json.loads(res.body.decode("utf-8"))
+            self.assertFalse(data.get("success", True))
+            self.assertIn("Teach Mode is active", data.get("error", ""))
+
+        # Check warning log in state
+        log_texts = [l["text"] for l in self.state.logs]
+        self.assertTrue(any("Teach Mode is active. Stop Teach Mode before executing automated motions." in text for text in log_texts))
+
+    def test_disable_robot_during_teach_mode_homes_before_disabling(self) -> None:
+        """Clicking Disable Robot during Teach Mode cleanly exits gravity compensation and safe-homes before cutting motor torque."""
+        self.state.teach_mode_active = True
+        self.state.robot_enabled = True
+
+        self.robot_worker._execute_disable()
+
+        # Both teach_mode_active and robot_enabled must now be False
+        self.assertFalse(self.state.teach_mode_active)
+        self.assertFalse(self.state.robot_enabled)
+
+        # Verify logs show exiting teach mode and homing before disable
+        log_texts = [l["text"] for l in self.state.logs]
+        self.assertTrue(any("Exiting Teach Mode and safe-homing arm before disabling motors" in text for text in log_texts))
+        self.assertTrue(any("Arm smoothly returned to Safe Home" in text or "Teach Mode deactivated. Arm safely homed." in text for text in log_texts))
+        self.assertTrue(any("Robot motors disabled" in text for text in log_texts))
+
+    def test_instant_emergency_stop_during_teach_homing(self) -> None:
+        """Clicking EMERGENCY STOP immediately interrupts Teach Mode homing motion without waiting."""
+        self.state.teach_mode_active = True
+        self.robot_worker.abort_event.set()
+
+        # _execute_stop_teach_mode must immediately raise ExecutionAborted when abort_event is set
+        with self.assertRaises(ExecutionAborted):
+            self.robot_worker._execute_stop_teach_mode()
+
+        self.assertFalse(self.state.teach_mode_active)
+
+    def test_safe_home_teach_aborts_immediately_on_abort_event(self) -> None:
+        """_safe_home_teach raises ExecutionAborted immediately when abort_event is set."""
+        mock_gc = unittest.mock.MagicMock()
+        mock_gc._hold_kp = np.array([2.0] * 6)
+        mock_gc._hold_kd = np.array([1.0] * 6)
+        mock_gc._gravity_comp_torque.return_value = np.zeros(6)
+        mock_robot = unittest.mock.MagicMock()
+        mock_robot.arm.get_positions.return_value = np.array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5])
+        mock_robot.arm.num_joints = 6
+        mock_robot.has_gripper = False
+        mock_gc.rebotarm = mock_robot
+
+        self.robot_worker.abort_event.set()
+        with self.assertRaises(ExecutionAborted):
+            self.robot_worker._safe_home_teach(mock_gc, mock_robot)
 
 
 if __name__ == "__main__":
