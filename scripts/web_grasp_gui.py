@@ -3098,6 +3098,144 @@ INDEX_HTML = """<!DOCTYPE html>
       border-radius: var(--radius-md);
       padding: 16px 20px;
     }
+
+    /* Interactive Spotlight Product Tour */
+    .tour-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: transparent;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+      transition: opacity 0.25s ease;
+    }
+    .tour-spotlight-box {
+      position: fixed;
+      background: transparent;
+      border-radius: var(--radius-md);
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.78), 0 0 20px rgba(10, 132, 255, 0.45);
+      border: 2px solid var(--primary);
+      pointer-events: none;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 1001;
+    }
+    .tour-card {
+      position: fixed;
+      background: var(--card-bg);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: var(--radius-lg);
+      padding: 16px 18px;
+      width: 330px;
+      max-width: 90vw;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.08);
+      z-index: 1002;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      animation: tourFadeIn 0.22s ease;
+    }
+    @keyframes tourFadeIn {
+      from { opacity: 0; transform: translateY(6px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .tour-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .tour-card-title-group {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .tour-step-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--primary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    .tour-card-title {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.01em;
+    }
+    .tour-btn-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      line-height: 1;
+      transition: all 0.15s ease;
+    }
+    .tour-btn-close:hover {
+      color: #ffffff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .tour-card-desc {
+      font-size: 0.82rem;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .tour-card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-top: 1px solid var(--card-border-subtle);
+      padding-top: 8px;
+      margin-top: 2px;
+    }
+    .tour-card-ref {
+      font-size: 0.68rem;
+      color: var(--text-faint);
+      font-family: var(--font-mono);
+    }
+    .tour-btn-group {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-left: auto;
+    }
+    .tour-btn {
+      padding: 4px 10px;
+      font-size: 0.76rem;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      background: var(--card-bg-elevated);
+      color: var(--text);
+      border: 1px solid var(--card-border);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .tour-btn:hover:not(:disabled) {
+      background: #232e45;
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+    .tour-btn:disabled {
+      opacity: 0.3;
+      cursor: not-allowed;
+    }
+    .tour-btn-primary {
+      background: var(--primary);
+      color: #fff;
+      border-color: rgba(255, 255, 255, 0.15);
+      font-weight: 600;
+    }
+    .tour-btn-primary:hover:not(:disabled) {
+      background: var(--primary-hover);
+    }
   </style>
 </head>
 <body>
@@ -3112,7 +3250,6 @@ INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn" onclick="switchTab('waypoints')">Waypoints Editor</button>
       <button class="tab-btn" onclick="switchTab('config')">Robot & Camera Config</button>
       <button class="tab-btn" onclick="switchTab('teach')">Teach &amp; Record</button>
-      <button class="tab-btn" onclick="switchTab('guide')">User Guide</button>
     </div>
 
     <div class="header-actions">
@@ -3122,7 +3259,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <span id="badge-enabled-text" style="color: var(--text-muted);">ROBOT DISABLED</span>
       </div>
       <span id="badge-waypoints" class="status-badge status-waypoints" title="Active Robot Waypoints (Click to view & edit)" onclick="switchTab('waypoints')">2 WPs (0 App / 2 Ret)</span>
-      <button class="btn-guide-pill" onclick="switchTab('guide')" title="Open Quick User Guide">Quick Guide</button>
+      <button id="btn-header-guide" class="btn-guide-pill" onclick="startProductTour()" title="Start Interactive Spotlight Tour">[ ? Guide ]</button>
       <span id="badge-mode" style="font-size: 0.78rem; color: var(--text-faint); font-family: var(--font-mono);">Connected</span>
     </div>
   </header>
@@ -3774,159 +3911,29 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 4: USER GUIDE & WALKTHROUGH -->
-    <div id="tab-guide" class="tab-content">
-      <div class="guide-banner">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-          <div>
-            <h2 style="font-size: 1.25rem; font-weight: 700; color: #fff; letter-spacing: -0.01em;">
-              Station Operator &amp; Quick-Start Guide
-            </h2>
-            <p style="color: var(--text-muted); font-size: 0.86rem; margin-top: 6px;">
-              A simple, step-by-step walkthrough for lab operators and engineers to pick test tubes with the reBot Arm B601.
-            </p>
+    <!-- INTERACTIVE SPOTLIGHT PRODUCT TOUR OVERLAY -->
+    <div id="tour-overlay" class="tour-overlay" style="display: none;" onclick="closeProductTour()">
+      <div id="tour-spotlight-box" class="tour-spotlight-box"></div>
+      <div id="tour-card" class="tour-card" onclick="event.stopPropagation()">
+        <div class="tour-card-header">
+          <div class="tour-card-title-group">
+            <span id="tour-card-step-badge" class="tour-step-badge">Step 1 of 6</span>
+            <div id="tour-card-title" class="tour-card-title">Live Camera Feed</div>
           </div>
-          <button onclick="switchTab('station')" class="btn-main" style="background: var(--primary); color: #fff; border: 1px solid rgba(255,255,255,0.15); padding: 8px 16px;">
-            Open Grasping Station
-          </button>
+          <button class="tour-btn-close" onclick="closeProductTour()" title="Close Tour">X</button>
+        </div>
+        <p id="tour-card-desc" class="tour-card-desc">
+          HOW TO PICK TUBES IN 3 STEPS: View the live stream. Falcon tubes are sorted and numbered from left to right.
+        </p>
+        <div class="tour-card-footer">
+          <span class="tour-card-ref">User Guide &bull; docs/WEB_GUI_USER_GUIDE.md</span>
+          <div class="tour-btn-group">
+            <button id="tour-btn-back" class="tour-btn" onclick="prevTourStep()">Back</button>
+            <button id="tour-btn-next" class="tour-btn tour-btn-primary" onclick="nextTourStep()">Next</button>
+            <button class="tour-btn" onclick="closeProductTour()">Close</button>
+          </div>
         </div>
       </div>
-
-      <!-- Quick 3-Step Walkthrough -->
-      <div class="card">
-        <div class="card-title">
-          <span>QUICK-START: HOW TO PICK TUBES IN 3 STEPS</span>
-        </div>
-        <div class="guide-step-grid">
-          
-          <div class="guide-step-card">
-            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-              <span class="guide-step-num">1</span>
-              <strong style="color: var(--cyan); font-size: 0.95rem;">Move Arm to Ready Pose</strong>
-            </div>
-            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
-              When the station starts, the robot holds still for safety. Click the <strong>"Ready Pose"</strong> button. The robotic arm smoothly moves above the rack, opens its gripper, and aims the camera directly at the test tubes.
-            </p>
-            <div style="margin-top: 12px; background: rgba(10, 132, 255, 0.08); border-left: 3px solid var(--primary); padding: 8px 10px; font-size: 0.78rem; color: #93c5fd; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
-              <em>Tip: Always ensure the workspace is clear before moving to Ready Pose.</em>
-            </div>
-          </div>
-
-          <div class="guide-step-card">
-            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-              <span class="guide-step-num">2</span>
-              <strong style="color: var(--success); font-size: 0.95rem;">Select Tubes to Pick</strong>
-            </div>
-            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
-              Look at the live video stream. Tubes are automatically numbered from left to right (<strong>#1, #2, #3...</strong>). Click the tube buttons in the order you want them picked (e.g. click <strong>#3</strong>, then <strong>#1</strong>). They appear in the <strong>PICKING QUEUE</strong> list.
-            </p>
-            <div style="margin-top: 12px; background: rgba(48, 209, 88, 0.08); border-left: 3px solid var(--success); padding: 8px 10px; font-size: 0.78rem; color: #86efac; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
-              <em>Tip: Click X on any tube in the queue if you made a mistake, or click "Clear All".</em>
-            </div>
-          </div>
-
-          <div class="guide-step-card">
-            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-              <span class="guide-step-num">3</span>
-              <strong style="color: var(--warning); font-size: 0.95rem;">Click "GRASP QUEUE"</strong>
-            </div>
-            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
-              Click the <strong>"GRASP QUEUE"</strong> button. The camera freezes to lock coordinates, and the arm automatically hovers (+10cm), descends, clamps the tube, lifts straight up, and tilts away safely. Once finished, it returns to live mode!
-            </p>
-            <div style="margin-top: 12px; background: rgba(255, 159, 10, 0.08); border-left: 3px solid var(--warning); padding: 8px 10px; font-size: 0.78rem; color: #fde68a; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
-              <em>Tip: Never reach into the robot workspace while the status shows "EXECUTING".</em>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <!-- Controls & Shortcuts Reference Table -->
-      <div class="card">
-        <div class="card-title">
-          <span>WEB DASHBOARD CONTROLS REFERENCE</span>
-        </div>
-        <table class="guide-table">
-          <thead>
-            <tr>
-              <th style="width: 22%;">Control / Button</th>
-              <th style="width: 28%;">Function</th>
-              <th>Operational Safety &amp; Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong style="color: var(--danger);">EMERGENCY STOP</strong></td>
-              <td>Immediately halts execution, opens gripper, returns to Safe Home, and disables motors.</td>
-              <td>Top-level emergency override. Use anytime unexpected motion or obstacle collision occurs.</td>
-            </tr>
-            <tr>
-              <td><strong style="color: var(--primary);">GRASP QUEUE</strong></td>
-              <td>Executes sequential grasp on all selected tubes.</td>
-              <td>Freezes video frame during sequence; runs Pre-grasp -> Grasp -> Retreat Waypoints -> Ready Pose.</td>
-            </tr>
-            <tr>
-              <td><strong style="color: var(--text-primary);">Macro Center</strong></td>
-              <td>Tests camera alignment and centers gripper over target tube.</td>
-              <td>Useful to verify hand-eye calibration before initiating full grasp.</td>
-            </tr>
-            <tr>
-              <td><strong style="color: var(--text-primary);">Safe Home</strong></td>
-              <td>Moves arm to absolute vertical zero posture.</td>
-              <td>Safely resets arm position before powering off or recalibrating.</td>
-            </tr>
-            <tr>
-              <td><strong style="color: var(--text-primary);">Ready Pose</strong></td>
-              <td>Returns arm to the pre-configured viewing pose above rack.</td>
-              <td>Default observing position defined in <code>config/default.yaml</code>.</td>
-            </tr>
-            <tr>
-              <td><strong style="color: var(--text-primary);">Reset / Unfreeze</strong></td>
-              <td>Unfreezes the camera stream and returns to real-time detection.</td>
-              <td>Clears temporary frozen visual cache without moving the physical arm.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- FAQ & Troubleshooting -->
-      <div class="card">
-        <div class="card-title">
-          <span>SAFETY, TROUBLESHOOTING &amp; FREQUENTLY ASKED QUESTIONS</span>
-        </div>
-        <div class="guide-faq-grid">
-          
-          <div class="guide-faq-card">
-            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">What if a tube is not detected on the video?</h4>
-            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
-              Ensure the camera focus is set correctly in the <strong>Robot &amp; Camera Config</strong> tab. You can preview focus values using <code>scripts/preview_camera_focus.py</code>. Also verify adequate table lighting.
-            </p>
-          </div>
-
-          <div class="guide-faq-card">
-            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">How does Teach Mode work?</h4>
-            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
-              Open the <strong>Teach &amp; Record</strong> tab and click <em>Start Teach Mode</em>. Gravity compensation activates, letting you float and guide the arm by hand. Record poses in either Cartesian (XYZ RPY) or Joint Angles mode.
-            </p>
-          </div>
-
-          <div class="guide-faq-card">
-            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">Where are waypoints and configurations saved?</h4>
-            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
-              Waypoints are saved directly to <code>config/waypoints.yaml</code> and general robot/camera parameters are stored in <code>config/default.yaml</code>. Both auto-sync seamlessly with the web dashboard.
-            </p>
-          </div>
-
-          <div class="guide-faq-card">
-            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">For complete engineering documentation:</h4>
-            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
-              Please refer to <code style="color: var(--cyan);">docs/WEB_GUI_USER_GUIDE.md</code> for advanced configuration details, kinematics calculations, and error resolution.
-            </p>
-          </div>
-
-        </div>
-      </div>
-
     </div>
   </main>
 
@@ -3938,30 +3945,274 @@ INDEX_HTML = """<!DOCTYPE html>
     let currentTubes = [];
     let currentQueue = [];
 
+    let currentTab = 'station';
     function switchTab(tabId) {
+      if (tabId === 'guide') {
+        startProductTour();
+        return;
+      }
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       try { sessionStorage.setItem('active_tab', tabId); } catch(e) {}
+      currentTab = tabId;
       if (tabId === 'station') {
-        document.querySelector('.nav-tabs .tab-btn:nth-child(1)').classList.add('active');
-        document.getElementById('tab-station').classList.add('active');
+        const btn = document.querySelector('.nav-tabs .tab-btn:nth-child(1)');
+        if (btn) btn.classList.add('active');
+        const tab = document.getElementById('tab-station');
+        if (tab) tab.classList.add('active');
       } else if (tabId === 'waypoints') {
-        document.querySelector('.nav-tabs .tab-btn:nth-child(2)').classList.add('active');
-        document.getElementById('tab-waypoints').classList.add('active');
+        const btn = document.querySelector('.nav-tabs .tab-btn:nth-child(2)');
+        if (btn) btn.classList.add('active');
+        const tab = document.getElementById('tab-waypoints');
+        if (tab) tab.classList.add('active');
         loadWaypoints();
       } else if (tabId === 'config') {
-        document.querySelector('.nav-tabs .tab-btn:nth-child(3)').classList.add('active');
-        document.getElementById('tab-config').classList.add('active');
+        const btn = document.querySelector('.nav-tabs .tab-btn:nth-child(3)');
+        if (btn) btn.classList.add('active');
+        const tab = document.getElementById('tab-config');
+        if (tab) tab.classList.add('active');
         loadConfiguration();
       } else if (tabId === 'teach') {
-        document.querySelector('.nav-tabs .tab-btn:nth-child(4)').classList.add('active');
-        document.getElementById('tab-teach').classList.add('active');
+        const btn = document.querySelector('.nav-tabs .tab-btn:nth-child(4)');
+        if (btn) btn.classList.add('active');
+        const tab = document.getElementById('tab-teach');
+        if (tab) tab.classList.add('active');
         fetchTeachPose();
-      } else if (tabId === 'guide') {
-        document.querySelector('.nav-tabs .tab-btn:nth-child(5)').classList.add('active');
-        document.getElementById('tab-guide').classList.add('active');
       }
     }
+
+    // ==========================================
+    // Interactive Spotlight Product Tour
+    // ==========================================
+    const TOUR_DATA = {
+      station: [
+        {
+          target: '.video-container',
+          title: 'Live Camera Feed',
+          desc: 'HOW TO PICK TUBES IN 3 STEPS: View the live stream. Falcon tubes are sorted and numbered from left to right.'
+        },
+        {
+          target: '#tubes-bar',
+          title: 'Tube Buttons Bar',
+          desc: 'Click any numbered tube button to add it to your custom sequential picking queue.'
+        },
+        {
+          target: '#queue-box',
+          title: 'Picking Queue',
+          desc: 'Review queued tubes in execution order. Click the remove button to discard unwanted items.'
+        },
+        {
+          target: '#card-led-border',
+          title: 'Motor Driver Feedback',
+          desc: 'Live hardware torque status. Green indicates motors are powered and active.'
+        },
+        {
+          target: '.actions-grid',
+          title: 'Master Motion Controls',
+          desc: 'Click GRASP QUEUE to execute picking, or EMERGENCY STOP to abort motion immediately.'
+        },
+        {
+          target: '#console-log',
+          title: 'System Telemetry Log',
+          desc: 'Live hardware events and warnings. Filter, copy, or clear logs at any time.'
+        }
+      ],
+      waypoints: [
+        {
+          target: '#wp-cfg-filename',
+          title: 'Active Configuration',
+          desc: 'Displays the active waypoints file. Changes save directly to waypoints.yaml on disk.'
+        },
+        {
+          target: '#approach-wps-list',
+          title: 'Approach Waypoints',
+          desc: 'Via-points executed before grasping. Configure relative offsets or absolute coordinates.'
+        },
+        {
+          target: '#retreat-wps-list',
+          title: 'Retreat Waypoints',
+          desc: 'Via-points executed after grasping to safely clear the rack before homing.'
+        },
+        {
+          target: '#app-mode',
+          title: 'Waypoint Form',
+          desc: 'Append custom waypoints using relative offsets or absolute coordinates with optional pause.'
+        }
+      ],
+      config: [
+        {
+          target: '#cfg-cam-id',
+          title: 'Camera & Focus Settings',
+          desc: 'Set camera device ID, fixed manual focus value, and optical intrinsics file path.'
+        },
+        {
+          target: '#cfg-table-z',
+          title: 'Grasp Plane & Offsets',
+          desc: 'Calibrate table height, pregrasp elevation, insertion depth, and vertical plunge depth.'
+        },
+        {
+          target: '#cfg-he-file',
+          title: 'Hand-Eye Calibration',
+          desc: 'Select hand-eye matrix file and calibrate translational compensation offsets in meters.'
+        },
+        {
+          target: '#cfg-rp-x',
+          title: 'Ready Pose Settings',
+          desc: 'Configure the default camera observation position in base frame coordinates.'
+        },
+        {
+          target: '#cfg-gripper-ready-open',
+          title: 'Gripper Configuration',
+          desc: 'Set ready opening width, fixed close targets, and test clamping width.'
+        },
+        {
+          target: '.btn-save-cfg',
+          title: 'Save Configuration',
+          desc: 'Writes all updated parameters directly into default.yaml and syncs robot state.'
+        }
+      ],
+      teach: [
+        {
+          target: '#btn-teach-toggle',
+          title: 'Gravity Compensation',
+          desc: 'Activates compliant zero-torque floating mode. Hand-guide the arm smoothly to desired target poses.'
+        },
+        {
+          target: '#btn-mode-cartesian',
+          title: 'Slide Mode Selector',
+          desc: 'Toggle recording format between Cartesian XYZ RPY coordinates and 6-axis joint angles.'
+        },
+        {
+          target: '#teach-hud-cartesian',
+          title: 'Live Arm Telemetry HUD',
+          desc: 'Streams live coordinates or joint angles in real time with tabular precision.'
+        },
+        {
+          target: '#btn-record-pose',
+          title: 'Capture Snapshot',
+          desc: 'Set duration and gripper action, then click Record to stage the current arm pose.'
+        },
+        {
+          target: '#teach-staged-container',
+          title: 'Recorded Waypoints Board',
+          desc: 'Review and inspect staged poses. Discard unwanted points before exporting.'
+        },
+        {
+          target: '#teach-staged-count',
+          title: 'Export Staged Points',
+          desc: 'Export staged points to Approach waypoints, Retreat waypoints, or Ready Pose.'
+        }
+      ]
+    };
+
+    let tourActive = false;
+    let tourStepIndex = 0;
+    let tourSteps = [];
+
+    function startProductTour() {
+      const activeTabId = currentTab || 'station';
+      tourSteps = TOUR_DATA[activeTabId] || TOUR_DATA['station'];
+      if (!tourSteps || tourSteps.length === 0) return;
+      tourActive = true;
+      tourStepIndex = 0;
+      const overlay = document.getElementById('tour-overlay');
+      if (overlay) overlay.style.display = 'flex';
+      renderTourStep();
+    }
+
+    function closeProductTour() {
+      tourActive = false;
+      const overlay = document.getElementById('tour-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }
+
+    function prevTourStep() {
+      if (!tourActive || tourStepIndex <= 0) return;
+      tourStepIndex--;
+      renderTourStep();
+    }
+
+    function nextTourStep() {
+      if (!tourActive) return;
+      if (tourStepIndex >= tourSteps.length - 1) {
+        closeProductTour();
+        return;
+      }
+      tourStepIndex++;
+      renderTourStep();
+    }
+
+    function renderTourStep() {
+      if (!tourActive || !tourSteps || tourSteps.length === 0) return;
+      const step = tourSteps[tourStepIndex];
+      const targetEl = document.querySelector(step.target);
+
+      // Update text and indicators
+      const badge = document.getElementById('tour-card-step-badge');
+      if (badge) badge.innerText = `Step ${tourStepIndex + 1} of ${tourSteps.length}`;
+      const title = document.getElementById('tour-card-title');
+      if (title) title.innerText = step.title;
+      const desc = document.getElementById('tour-card-desc');
+      if (desc) desc.innerText = step.desc;
+
+      const backBtn = document.getElementById('tour-btn-back');
+      if (backBtn) backBtn.disabled = (tourStepIndex === 0);
+
+      const nextBtn = document.getElementById('tour-btn-next');
+      if (nextBtn) {
+        nextBtn.innerText = (tourStepIndex === tourSteps.length - 1) ? 'Finish' : 'Next';
+      }
+
+      // Position spotlight box and floating card
+      const spotlight = document.getElementById('tour-spotlight-box');
+      const card = document.getElementById('tour-card');
+
+      if (targetEl && spotlight && card) {
+        const updateSpotlight = () => {
+          const rect = targetEl.getBoundingClientRect();
+          const pad = 6;
+          spotlight.style.top = `${Math.max(0, rect.top - pad)}px`;
+          spotlight.style.left = `${Math.max(0, rect.left - pad)}px`;
+          spotlight.style.width = `${rect.width + pad * 2}px`;
+          spotlight.style.height = `${rect.height + pad * 2}px`;
+
+          // Position card adjacent to target
+          const cardWidth = 340;
+          const cardHeight = 160;
+          let cardTop = rect.bottom + 14;
+          let cardLeft = rect.left + (rect.width / 2) - (cardWidth / 2);
+
+          // If overflowing bottom, position above
+          if (cardTop + cardHeight > window.innerHeight - 20) {
+            cardTop = Math.max(20, rect.top - cardHeight - 14);
+          }
+          // Clamp horizontally
+          cardLeft = Math.max(16, Math.min(window.innerWidth - cardWidth - 16, cardLeft));
+
+          card.style.top = `${cardTop}px`;
+          card.style.left = `${cardLeft}px`;
+        };
+
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        updateSpotlight();
+        setTimeout(updateSpotlight, 100);
+      }
+    }
+
+    // Keyboard navigation for Tour
+    window.addEventListener('keydown', (e) => {
+      if (!tourActive) return;
+      if (e.key === 'Escape') closeProductTour();
+      else if (e.key === 'ArrowRight') nextTourStep();
+      else if (e.key === 'ArrowLeft') prevTourStep();
+    });
+
+    window.addEventListener('resize', () => {
+      if (tourActive) renderTourStep();
+    });
+    window.addEventListener('scroll', () => {
+      if (tourActive) renderTourStep();
+    }, true);
 
     // Polling System State
     async function updateState() {
@@ -5108,7 +5359,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
     try {
       const savedTab = sessionStorage.getItem('active_tab');
-      if (savedTab && ['station', 'waypoints', 'config', 'teach', 'guide'].includes(savedTab)) {
+      if (savedTab && ['station', 'waypoints', 'config', 'teach'].includes(savedTab)) {
         switchTab(savedTab);
       }
     } catch(e) {}
