@@ -12,6 +12,21 @@ waypoints:
     pitch: 0
     yaw: 1.2
     duration: 3
+  - x: 0.3746
+    y: -0.2051
+    z: 0.2077
+    roll: 0.0409
+    pitch: -0.0356
+    yaw: -0.4577
+    duration: 2
+  - x: 0.2897
+    y: -0.2196
+    z: 0.2057
+    roll: -0.1249
+    pitch: -0.0849
+    yaw: -0.6028
+    duration: 2
+    gripper: open
 motion_parameters:
   fixed_grasp_rpy:
     roll: 0.0

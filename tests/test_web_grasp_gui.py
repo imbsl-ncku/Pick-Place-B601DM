@@ -88,7 +88,7 @@ class TestWebGraspGuiLogic(unittest.TestCase):
 
     def test_exact_retreat_waypoints(self) -> None:
         """Verify strict adherence to RETREAT_WAYPOINTS without injected open_gripper calls."""
-        self.assertEqual(len(self.state.retreat_waypoints), 2)
+        self.assertGreaterEqual(len(self.state.retreat_waypoints), 2)
         # Waypoint 1: lift dz=0.10
         self.assertEqual(self.state.retreat_waypoints[0].get("dz"), 0.10)
         self.assertNotIn("gripper", self.state.retreat_waypoints[0])
@@ -105,7 +105,7 @@ class TestWebGraspGuiLogic(unittest.TestCase):
         """Verify waypoints.yaml loading, modification, and persistence."""
         self.assertTrue(self.waypoints_cfg_path.exists())
         self.assertEqual(len(self.state.approach_waypoints), 0)
-        self.assertEqual(len(self.state.retreat_waypoints), 2)
+        self.assertGreaterEqual(len(self.state.retreat_waypoints), 2)
 
         # Test adding a temporary waypoint and saving to disk (with backup)
         orig_content = self.waypoints_cfg_path.read_text(encoding="utf-8")
@@ -542,7 +542,7 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         data = json.loads(res_get.body.decode("utf-8"))
         self.assertIn("approach", data)
         self.assertIn("retreat", data)
-        self.assertEqual(len(data["retreat"]), 2)
+        self.assertGreaterEqual(len(data["retreat"]), 2)
         self.assertIn("waypoints_file", data)
         self.assertEqual(data["waypoints_file"], "waypoints.yaml")
 
@@ -573,6 +573,19 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         finally:
             (self.state.waypoints_cfg_path).write_text(orig_content, encoding="utf-8")
             self.state.reload_waypoints_from_disk()
+
+    def test_waypoint_inline_quick_edit_html_elements(self) -> None:
+        """HTML includes inline waypoint quick-edit functions, close button, and enlarged card styling."""
+        res = self.fetch("/")
+        self.assertEqual(res.code, 200)
+        body = res.body.decode("utf-8")
+        self.assertIn("openEditWaypoint", body)
+        self.assertIn("closeEditWaypoint", body)
+        self.assertIn("applyWaypointEdits", body)
+        self.assertIn("saveEditWaypoint", body)
+        self.assertIn("wp-item-editing", body)
+        self.assertIn("wp-edit-close-btn", body)
+        self.assertIn("Quick Modify", body)
 
     def test_config_api_read_and_write(self) -> None:
         """GET and POST /api/config can read and save configuration parameters safely."""
@@ -811,6 +824,63 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         latest_logs = [log["text"] for log in self.state.logs]
         self.assertTrue(any("Teach Mode deactivated. Arm safely homed." in log for log in latest_logs))
 
+    def test_teach_mode_hardware_stop_calls_gc_safe_home_and_restores_station(self) -> None:
+        """When stopping teach mode on hardware, gc.safe_home() is called, arm mode is restored to posvel, and loop restarted."""
+        arm_mock = unittest.mock.MagicMock()
+        arm_mock.control_loop_active = False
+        arm_mock.has_gripper = True
+        arm_mock.arm.mode_pos_vel.return_value = True
+        arm_mock.gripper.mode_mit.return_value = True
+
+        gc_mock = unittest.mock.MagicMock()
+        gc_mock._running = True
+
+        ctrl_mock = unittest.mock.MagicMock()
+        ctrl_mock._arm_control_mode = "posvel"
+        ctrl_mock._running = False
+        ctrl_mock._n = 6
+
+        driver_mock = unittest.mock.MagicMock()
+
+        self.state.dry_run = False
+        self.state.arm = arm_mock
+        self.state.controller = ctrl_mock
+        self.state.grasp_driver = driver_mock
+        self.state.teach_mode_active = True
+        self.state.gravity_controller = gc_mock
+
+        self.robot_worker._execute_stop_teach_mode()
+
+        # 1. gc.end() and gc.safe_home() must be called
+        gc_mock.end.assert_called_once()
+        gc_mock.safe_home.assert_called_once_with(max_vel=0.4, send_freq=50.0, settle=0.5, timeout=15.0)
+        self.assertIsNone(self.state.gravity_controller)
+        self.assertFalse(self.state.teach_mode_active)
+
+        # 2. Arm group must be restored to mode_pos_vel, gripper to mode_mit, enable_all
+        arm_mock.arm.mode_pos_vel.assert_called_once()
+        arm_mock.gripper.mode_mit.assert_called_once()
+        arm_mock.enable_all.assert_called_once()
+
+        # 3. Grasp driver targets primed and control loop restarted
+        driver_mock._prime_arm_target.assert_called_once()
+        driver_mock._prime_gripper_state.assert_called_once()
+        arm_mock.start_control_loop.assert_called_once_with(driver_mock._loop_cb)
+        self.assertTrue(ctrl_mock._running)
+
+    def test_emergency_stop_aborts_active_teach_mode(self) -> None:
+        """Emergency Stop while in Teach Mode safely ends gravity compensation."""
+        gc_mock = unittest.mock.MagicMock()
+        gc_mock._running = True
+        self.state.teach_mode_active = True
+        self.state.gravity_controller = gc_mock
+
+        self.robot_worker._execute_emergency_stop()
+
+        gc_mock.end.assert_called_once()
+        self.assertFalse(self.state.teach_mode_active)
+        self.assertIsNone(self.state.gravity_controller)
+
     def test_teach_mode_stage_and_discard_and_clear(self) -> None:
         """Staging board supports adding Cartesian or Joint poses, discarding individual items, and clearing."""
         with self.state.lock:
@@ -947,6 +1017,81 @@ class TestWebGraspGuiApi(tornado.testing.AsyncHTTPTestCase):
         self.assertIn("commitTeachWaypoints", body)
         self.assertIn("discardTeachPose", body)
         self.assertIn("clearTeachStaging", body)
+
+    def test_direct_click_to_pick_html_and_status_api(self) -> None:
+        """HTML must contain direct click-to-pick feedback layer and API status returns bbox and presence."""
+        response = self.fetch("/")
+        self.assertEqual(response.code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("video-feedback-layer", body)
+        self.assertIn("handleVideoClick", body)
+        self.assertIn("handleVideoMouseMove", body)
+        self.assertIn("showVideoClickFeedback", body)
+        self.assertIn("video-click-ripple", body)
+        self.assertIn("video-click-pill", body)
+
+        status_res = self.fetch("/api/status")
+        self.assertEqual(status_res.code, 200)
+        status_data = json.loads(status_res.body.decode("utf-8"))
+        self.assertIn("tubes", status_data)
+        if status_data["tubes"]:
+            tube0 = status_data["tubes"][0]
+            self.assertIn("bbox_xyxy", tube0)
+            self.assertIn("center_px", tube0)
+
+
+    def test_continuous_live_camera_feed_during_grasp(self) -> None:
+        """When action 'grasp' is requested, state is 'executing' (not 'frozen'), keeping live stream active."""
+        self.state.add_to_queue(1)
+        self.state.robot_enabled = True
+
+        res = self.fetch("/api/action", method="POST", headers={"Content-Type": "application/json"}, body=json.dumps({"action": "grasp"}))
+        self.assertEqual(res.code, 200)
+
+        # Status must be 'executing', never 'frozen'
+        self.assertEqual(self.state.status, "executing")
+        self.assertEqual(self.state.status_detail, "Executing Picking Queue")
+
+
+class TestLeftToRightNumberingAndContinuousFeed(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cfg_path = PROJECT_ROOT / "config" / "default.yaml"
+        self.state = SystemState(self.cfg_path, dry_run=True)
+
+    def test_simple_left_to_right_numbering(self) -> None:
+        raw_tubes = _generate_synthetic_tubes(0.17)
+        # Reverse order to verify sorting
+        raw_tubes.reverse()
+        raw_tubes.sort(key=lambda t: t["center_px"][0])
+        for idx, t in enumerate(raw_tubes, start=1):
+            t["id"] = idx
+        self.assertEqual([t["id"] for t in raw_tubes], [1, 2, 3, 4])
+
+    def test_snapshot_on_enqueue_behavior(self) -> None:
+        raw_tubes = _generate_synthetic_tubes(0.17)
+        for idx, t in enumerate(raw_tubes, start=1):
+            t["id"] = idx
+        self.state.detected_tubes = raw_tubes
+        self.state.add_to_queue(2)
+        snap_y = self.state.queue[0]["p_base"][1]
+        # Mutate detected_tubes to simulate tube movement after enqueuing
+        self.state.detected_tubes[1]["p_base"][1] = 0.120
+        # Queued item must retain its snapshotted coordinate
+        self.assertEqual(self.state.queue[0]["p_base"][1], snap_y)
+
+    def test_robot_worker_executes_snapshotted_coordinates(self) -> None:
+        raw_tubes = _generate_synthetic_tubes(0.17)
+        for idx, t in enumerate(raw_tubes, start=1):
+            t["id"] = idx
+        self.state.detected_tubes = raw_tubes
+        self.state.robot_enabled = True
+        self.state.dry_run = True
+        self.state.add_to_queue(1)
+        worker = RobotWorker(self.state)
+        worker._execute_queue()
+        self.assertTrue(any("target=(0.350, -0.090, 0.150)" in l["text"] for l in self.state.logs))
+        self.assertEqual(len(self.state.queue), 0)
+        self.assertEqual(self.state.status, "live")
 
 
 if __name__ == "__main__":

@@ -314,16 +314,19 @@ def _get_live_arm_pose(state: Any) -> dict[str, Any]:
     grasp_driver = getattr(state, "grasp_driver", None)
 
     if dry_run or arm is None:
-        # Dry run simulation: generate a gentle floating motion around nominal pose
-        t = time.time() - getattr(state, "sim_teach_start_time", 0.0)
-        q = np.array([
-            0.00 + 0.15 * np.sin(0.4 * t),
-            -0.65 + 0.10 * np.cos(0.3 * t),
-            -0.85 + 0.12 * np.sin(0.35 * t),
-            0.00 + 0.08 * np.cos(0.5 * t),
-            0.45 + 0.10 * np.sin(0.25 * t),
-            0.00 + 0.20 * np.cos(0.4 * t),
-        ], dtype=np.float64)
+        # Dry run simulation: generate a gentle floating motion around nominal pose when active, or home at zero
+        if getattr(state, "teach_mode_active", False):
+            t = time.time() - getattr(state, "sim_teach_start_time", 0.0)
+            q = np.array([
+                0.00 + 0.15 * np.sin(0.4 * t),
+                -0.65 + 0.10 * np.cos(0.3 * t),
+                -0.85 + 0.12 * np.sin(0.35 * t),
+                0.00 + 0.08 * np.cos(0.5 * t),
+                0.45 + 0.10 * np.sin(0.25 * t),
+                0.00 + 0.20 * np.cos(0.4 * t),
+            ], dtype=np.float64)
+        else:
+            q = np.zeros(6, dtype=np.float64)
     else:
         try:
             if hasattr(arm, "arm") and hasattr(arm.arm, "get_positions"):
@@ -685,8 +688,8 @@ class SystemState:
                 "tube_id": tube_id,
                 "label": f"Tube #{tube_id}",
                 "class_name": match["class_name"],
-                "p_base": match["p_base"].copy(),
-                "position_cam": match["position_cam"].copy(),
+                "p_base": match["p_base"].copy() if hasattr(match["p_base"], "copy") else list(match["p_base"]),
+                "position_cam": match["position_cam"].copy() if hasattr(match["position_cam"], "copy") else list(match["position_cam"]),
                 "jaw_width_m": match["jaw_width_m"],
                 "center_px": match["center_px"],
             }
@@ -813,6 +816,13 @@ class VisionWorker(threading.Thread):
 
         while self.running:
             try:
+                with self.state.lock:
+                    is_frozen = (self.state.status == "frozen")
+                    is_executing = self.state.status in ("executing", "paused")
+                    T_hand_eye = self.state.T_hand_eye
+                    grasp_driver = self.state.grasp_driver
+                    current_cfg = self.state.cfg
+
                 if use_synthetic_cam or cam is None:
                     color_bgr = _generate_synthetic_bench_frame()
                 else:
@@ -821,11 +831,6 @@ class VisionWorker(threading.Thread):
                         color_bgr = _generate_synthetic_bench_frame()
 
                 frame_idx += 1
-                with self.state.lock:
-                    is_frozen = self.state.status in ("frozen", "executing", "paused")
-                    T_hand_eye = self.state.T_hand_eye
-                    grasp_driver = self.state.grasp_driver
-                    current_cfg = self.state.cfg
 
                 table_z_m = float(current_cfg.get("grasp_pipeline", {}).get("grasp", {}).get("table_z_m", 0.17))
                 depth_quantile = float(current_cfg.get("grasp_pipeline", {}).get("grasp", {}).get("depth_quantile", 0.5))
@@ -833,8 +838,8 @@ class VisionWorker(threading.Thread):
                 # Compute live camera-to-base transform
                 T_cam2base = _cam_to_base(T_hand_eye, grasp_driver, current_cfg, dry_run=self.state.dry_run)
 
-                # Detection only when live and on interval
-                if not is_frozen and (frame_idx % infer_every == 0 or not self.state.detected_tubes):
+                # Detection only when live at observation pose (not frozen and not executing motion)
+                if not is_frozen and not is_executing and (frame_idx % infer_every == 0 or not self.state.detected_tubes):
                     if model is not None:
                         last_results = model.predict(
                             color_bgr,
@@ -874,7 +879,7 @@ class VisionWorker(threading.Thread):
                     else:
                         raw_tubes = _generate_synthetic_tubes(table_z_m)
 
-                    # SORT STRICTLY FROM LEFT TO RIGHT by horizontal pixel coordinate (center_px[0])
+                    # Simple Left-to-Right Tube Numbering (#1, #2, #3...)
                     raw_tubes.sort(key=lambda t: t["center_px"][0])
                     for idx, t in enumerate(raw_tubes, start=1):
                         t["id"] = idx
@@ -885,10 +890,11 @@ class VisionWorker(threading.Thread):
                 # Annotate Frame
                 display = color_bgr.copy()
                 with self.state.lock:
-                    tubes_to_draw = list(self.state.detected_tubes)
-                    queued_ids = [item["tube_id"] for item in self.state.queue]
                     status_text = self.state.status.upper()
                     detail_text = self.state.status_detail
+                    is_exec = self.state.status in ("executing", "paused")
+                    tubes_to_draw = list(self.state.detected_tubes) if not is_exec else []
+                    queued_ids = [item["tube_id"] for item in self.state.queue]
 
                 # Clean, compact, highly legible badge sizing (proportional and balanced)
                 scale_ratio = display.shape[1] / 1280.0
@@ -896,7 +902,7 @@ class VisionWorker(threading.Thread):
                 font_thick = 2
                 box_thick = max(1, int(2.0 * scale_ratio))
 
-                # Overlay Tubes
+                # Overlay Tubes (when in live observation mode)
                 for t in tubes_to_draw:
                     tid = t["id"]
                     x1, y1, x2, y2 = t["bbox_xyxy"]
@@ -951,23 +957,30 @@ class VisionWorker(threading.Thread):
                     cv2.rectangle(display, (x1, coord_y1 - 2), (x1 + cw + 6, coord_y1 + ch + 5), (60, 70, 90), 1)
                     cv2.putText(display, coord_text, (x1 + 3, coord_y1 + ch + 1), cv2.FONT_HERSHEY_SIMPLEX, coord_scale, (0, 255, 255) if is_queued else (220, 220, 220), 1, cv2.LINE_AA)
 
-                # Top Status Pill Banner
-                banner_color = (0, 180, 0) if not is_frozen else (0, 120, 255)
-                cv2.rectangle(display, (10, 10), (280, 42), (20, 24, 33), -1)
-                cv2.rectangle(display, (10, 10), (280, 42), banner_color, 1)
-                cv2.circle(display, (26, 26), 6, banner_color, -1)
-                cv2.putText(display, f"{status_text} | {len(tubes_to_draw)} tubes", (40, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+                # Top Status Pill Banner: Active in all states
+                if is_exec:
+                    banner_color = (0, 140, 255)  # Amber orange during execution
+                    status_label = f"{status_text} | {detail_text}"
+                else:
+                    banner_color = (0, 180, 0) if not is_frozen else (0, 120, 255)
+                    status_label = f"{status_text} | {len(tubes_to_draw)} tubes"
 
-                if is_frozen:
+                banner_w = max(280, int(len(status_label) * 8.5 * scale_ratio) + 50)
+                cv2.rectangle(display, (10, 10), (10 + banner_w, 42), (20, 24, 33), -1)
+                cv2.rectangle(display, (10, 10), (10 + banner_w, 42), banner_color, 1)
+                cv2.circle(display, (26, 26), 6, banner_color, -1)
+                cv2.putText(display, status_label, (40, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1)
+
+                if is_frozen and not is_exec:
                     cv2.putText(display, f"[ {detail_text} ]", (10, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 215, 255), 2)
 
-                # JPEG Encode
+                # JPEG Encode - Continuous Live Stream
                 ok, jpeg = cv2.imencode(".jpg", display, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                 if ok:
                     jpeg_bytes = jpeg.tobytes()
                     with self.state.lock:
                         self.state.latest_jpeg = jpeg_bytes
-                        if not is_frozen:
+                        if not is_frozen and not is_exec:
                             self.state.frozen_jpeg = jpeg_bytes
                         self.state.new_frame_event.set()
 
@@ -1057,6 +1070,15 @@ class RobotWorker(threading.Thread):
             is_en = self.state.robot_enabled
             dry = self.state.dry_run or arm is None
             ready_open_w = self.state.gripper_ready_open_m if self.state.gripper_ready_open_m is not None else GRIPPER_READY_OPEN_M
+            gc = self.state.gravity_controller
+            self.state.teach_mode_active = False
+            self.state.gravity_controller = None
+
+        if gc is not None and getattr(gc, "_running", False):
+            try:
+                gc.end()
+            except Exception:
+                pass
 
         if not is_en and not dry:
             self.state.log_warning("[EMERGENCY STOP] Robot motors already disabled; holding safe stopped state.")
@@ -1403,7 +1425,8 @@ class RobotWorker(threading.Thread):
                 raise ExecutionAborted("Emergency stop requested before starting item.")
             label = item["label"]
             p_base = item["p_base"]
-            jaw_width = item["jaw_width_m"]
+            jaw_width = item.get("jaw_width_m", 0.03)
+
             with self.state.lock:
                 self.state.status_detail = f"Grasping {label} ({idx}/{total})"
 
@@ -1708,10 +1731,17 @@ class RobotWorker(threading.Thread):
         self.state.log("[TEACH] Activating Gravity Compensation / Teach Mode...")
         if not dry and arm is not None:
             try:
-                if ctrl is not None and getattr(ctrl, "_running", False):
+                # 1. Stop any running station control loop before entering gravity compensation
+                if hasattr(arm, "control_loop_active") and arm.control_loop_active:
+                    arm.stop_control_loop()
+                elif ctrl is not None and getattr(ctrl, "_running", False):
                     if hasattr(ctrl, "rebotarm") and hasattr(ctrl.rebotarm, "stop_control_loop"):
                         ctrl.rebotarm.stop_control_loop()
 
+                if ctrl is not None:
+                    ctrl._running = False
+
+                # 2. Instantiate and start GravityCompensation
                 if GravityCompensation is not None:
                     gc = GravityCompensation(arm)
                     gc.start()
@@ -1735,25 +1765,78 @@ class RobotWorker(threading.Thread):
         with self.state.lock:
             if not self.state.teach_mode_active:
                 return
+            self.state.status = "executing"
+            self.state.status_detail = "Teach Mode: Safe Homing Arm"
             dry = self.state.dry_run or self.state.arm is None
             arm = self.state.arm
             gc = self.state.gravity_controller
             ctrl = self.state.controller
+            driver = self.state.grasp_driver
 
         self.state.log("[TEACH] Deactivating Teach Mode. Returning arm safely to Home...")
         if not dry and arm is not None:
             try:
-                if gc is not None and getattr(gc, "_running", False):
-                    gc.end()
+                # Step 1: Smoothly safe_home() using GravityCompensation directly in MIT mode
+                if gc is not None:
+                    if getattr(gc, "_running", False):
+                        gc.end()
+                    if hasattr(gc, "safe_home"):
+                        self.state.log("[TEACH] Executing smooth safe_home() trajectory from taught pose...")
+                        gc.safe_home(max_vel=0.4, send_freq=50.0, settle=0.5, timeout=15.0)
+                        self.state.log_success("[TEACH] Safe Home reached. Arm is at joint zero configuration.")
+                else:
+                    # Fallback if compliant MIT was used without GravityCompensation
+                    if ctrl is not None:
+                        mode = getattr(ctrl, "_arm_control_mode", "posvel")
+                        if mode == "mit":
+                            arm.arm.mode_mit(kp=arm.arm._mit_kp, kd=arm.arm._mit_kd)
+                        else:
+                            arm.arm.mode_pos_vel()
+                        arm.enable_all()
+                        time.sleep(0.05)
+                        if driver is not None and hasattr(driver, "_prime_arm_target"):
+                            driver._prime_arm_target()
+                        elif hasattr(ctrl, "_q_target"):
+                            ctrl._q_target[:] = arm.get_state()[0][: getattr(ctrl, "_n", 6)]
+                            ctrl._qd_target[:] = 0.0
+                        if hasattr(arm, "control_loop_active") and not arm.control_loop_active:
+                            loop_cb = driver._loop_cb if driver is not None else ctrl._loop_cb
+                            arm.start_control_loop(loop_cb)
+                        ctrl._running = True
+                        if hasattr(ctrl, "safe_home"):
+                            self.state.log("[TEACH] Executing controller safe_home()...")
+                            ctrl.safe_home()
+
                 with self.state.lock:
                     self.state.gravity_controller = None
 
-                if ctrl is not None:
-                    if not getattr(ctrl, "_running", False):
-                        ctrl.start()
-                    if hasattr(ctrl, "safe_home"):
-                        self.state.log("[TEACH] Executing Safe Home trajectory...")
-                        ctrl.safe_home()
+                # Step 2: Cleanly restore station operational mode (posvel for arm, mit for gripper)
+                mode = getattr(ctrl, "_arm_control_mode", "posvel") if ctrl is not None else "posvel"
+                if mode == "mit":
+                    arm.arm.mode_mit(kp=arm.arm._mit_kp, kd=arm.arm._mit_kd)
+                else:
+                    arm.arm.mode_pos_vel()
+                if getattr(arm, "has_gripper", False):
+                    arm.gripper.mode_mit()
+                arm.enable_all()
+                time.sleep(0.05)
+
+                # Step 3: Restart station background control loop and re-prime setpoints at Home
+                if driver is not None:
+                    driver._prime_arm_target()
+                    driver._prime_gripper_state()
+                    if hasattr(arm, "control_loop_active") and not arm.control_loop_active:
+                        arm.start_control_loop(driver._loop_cb)
+                    if ctrl is not None:
+                        ctrl._running = True
+                elif ctrl is not None:
+                    q_now = arm.get_state()[0][: getattr(ctrl, "_n", 6)]
+                    ctrl._q_target[:] = q_now
+                    ctrl._qd_target[:] = 0.0
+                    if hasattr(arm, "control_loop_active") and not arm.control_loop_active:
+                        arm.start_control_loop(ctrl._loop_cb)
+                    ctrl._running = True
+
             except Exception as e:
                 self.state.log_error(f"[TEACH] Error during teach mode deactivation/homing: {e}", exc=e, source="TeachMode")
         else:
@@ -1786,7 +1869,8 @@ class VideoStreamHandler(tornado.web.RequestHandler):
                 break
 
             with state.lock:
-                jpeg = state.latest_jpeg if state.status == "live" else state.frozen_jpeg
+                # Keep live video feed active continuously - never freeze during grasping or return home
+                jpeg = state.latest_jpeg if (state.status != "frozen" or state.frozen_jpeg is None) else state.frozen_jpeg
 
             if jpeg is not None:
                 header = (
@@ -1819,6 +1903,8 @@ class StatusApiHandler(tornado.web.RequestHandler):
                     "y": round(float(t["p_base"][1]), 3),
                     "z": round(float(t["p_base"][2]), 3),
                     "is_queued": any(q["tube_id"] == t["id"] for q in state.queue),
+                    "bbox_xyxy": [int(v) for v in t["bbox_xyxy"]] if "bbox_xyxy" in t and t["bbox_xyxy"] is not None else None,
+                    "center_px": [int(v) for v in t["center_px"]] if "center_px" in t and t["center_px"] is not None else None,
                 }
                 for t in state.detected_tubes
             ]
@@ -1904,9 +1990,8 @@ class ActionApiHandler(tornado.web.RequestHandler):
                 if not state.queue:
                     self.write(json.dumps({"error": "Queue is empty"}))
                     return
-                # Freeze on grasp
-                state.status = "frozen"
-                state.status_detail = "Frame Frozen for Grasp Execution"
+                state.status = "executing"
+                state.status_detail = "Executing Picking Queue"
             robot_worker.submit("grasp_queue")
             self.write(json.dumps({"success": True}))
 
@@ -2535,8 +2620,63 @@ INDEX_HTML = """<!DOCTYPE html>
       justify-content: center;
       align-items: center;
       border: 1px solid var(--card-border);
+      cursor: default;
+      user-select: none;
     }
-    .video-container img { width: 100%; height: 100%; object-fit: contain; }
+    .video-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+
+    /* Video Click-to-Pick Feedback */
+    .video-feedback-layer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 10;
+    }
+    .video-click-ripple {
+      position: absolute;
+      width: 48px;
+      height: 48px;
+      margin-left: -24px;
+      margin-top: -24px;
+      border-radius: 50%;
+      border: 2px solid var(--accent);
+      background: rgba(10, 132, 255, 0.25);
+      box-shadow: 0 0 14px rgba(10, 132, 255, 0.6);
+      pointer-events: none;
+      animation: videoRipple 0.45s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+    }
+    .video-click-pill {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid var(--accent);
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-family: var(--font-mono);
+      padding: 3px 8px;
+      border-radius: 9999px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), 0 0 8px rgba(10, 132, 255, 0.4);
+      pointer-events: none;
+      white-space: nowrap;
+      animation: videoPillFloat 0.65s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes videoRipple {
+      0% { transform: scale(0.3); opacity: 1; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+    @keyframes videoPillFloat {
+      0% { opacity: 0; transform: translate(-50%, -60%); }
+      20% { opacity: 1; transform: translate(-50%, -100%); }
+      80% { opacity: 1; transform: translate(-50%, -130%); }
+      100% { opacity: 0; transform: translate(-50%, -150%); }
+    }
 
     /* Tubes Button Bar */
     .tube-buttons-bar {
@@ -2751,7 +2891,7 @@ INDEX_HTML = """<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       gap: 6px;
-      max-height: 240px;
+      max-height: 380px;
       overflow-y: auto;
       margin-bottom: 16px;
       background: var(--surface-inset);
@@ -2769,10 +2909,122 @@ INDEX_HTML = """<!DOCTYPE html>
       font-size: 0.82rem;
       border: 1px solid var(--card-border-subtle);
       transition: all 0.15s ease;
+      cursor: pointer;
     }
-    .wp-item-row:hover {
-      border-color: rgba(255, 255, 255, 0.1);
-      background: #202a3f;
+    .wp-item-row:hover:not(.wp-item-editing) {
+      border-color: rgba(10, 132, 255, 0.35);
+      background: #172238;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    }
+    .wp-item-editing {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      padding: 12px 14px;
+      background: #131b2c;
+      border: 1px solid rgba(10, 132, 255, 0.55);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(10, 132, 255, 0.25);
+      border-radius: var(--radius-sm);
+      cursor: default;
+    }
+    .wp-edit-grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+    .wp-inline-field {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .wp-inline-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      font-family: var(--font-mono);
+    }
+    .wp-inline-input {
+      background: #0b111c;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      color: #f1f5f9;
+      font-family: var(--font-mono);
+      font-size: 0.80rem;
+      font-variant-numeric: tabular-nums;
+      padding: 5px 8px;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+    .wp-inline-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.3);
+    }
+    .wp-inline-select {
+      background: #0b111c;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 4px;
+      color: #f1f5f9;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      padding: 5px 6px;
+      width: 100%;
+      outline: none;
+    }
+    .wp-inline-select:focus {
+      border-color: var(--primary);
+    }
+    .wp-inline-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      margin-top: 18px;
+      user-select: none;
+    }
+    .wp-inline-check input[type="checkbox"] {
+      width: auto;
+      cursor: pointer;
+      accent-color: var(--primary);
+    }
+    .wp-edit-close-btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #94a3b8;
+      border-radius: 4px;
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      line-height: 1;
+    }
+    .wp-edit-close-btn:hover {
+      background: rgba(255, 69, 58, 0.2);
+      border-color: rgba(255, 69, 58, 0.45);
+      color: #ff453a;
+    }
+    .wp-edit-btn-danger {
+      background: rgba(255, 69, 58, 0.1);
+      border: 1px solid rgba(255, 69, 58, 0.3);
+      color: #ff6961;
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .wp-edit-btn-danger:hover {
+      background: rgba(255, 69, 58, 0.25);
+      border-color: #ff453a;
+      color: #ffffff;
     }
     .wp-item-desc { display: flex; flex-direction: column; gap: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     .wp-badge-mode {
@@ -3272,8 +3524,9 @@ INDEX_HTML = """<!DOCTYPE html>
         <!-- Left: Live Video Feed -->
         <div>
           <div class="card" style="padding: 12px;">
-            <div class="video-container">
+            <div class="video-container" id="video-container" onclick="handleVideoClick(event)" onmousemove="handleVideoMouseMove(event)">
               <img id="stream-img" src="/video_feed" alt="Live Stream">
+              <div id="video-feedback-layer" class="video-feedback-layer"></div>
             </div>
           </div>
         </div>
@@ -4385,7 +4638,7 @@ INDEX_HTML = """<!DOCTYPE html>
     function renderQueue(queue) {
       const container = document.getElementById('queue-box');
       if (queue.length === 0) {
-        const emptyHtml = `<span class="empty-queue-msg">No tubes queued. Click buttons above to add.</span>`;
+        const emptyHtml = `<span class="empty-queue-msg">No tubes queued. Click buttons above or click tubes directly in camera feed to add.</span>`;
         if (lastQueueHtml !== emptyHtml) {
           container.innerHTML = emptyHtml;
           lastQueueHtml = emptyHtml;
@@ -4393,10 +4646,13 @@ INDEX_HTML = """<!DOCTYPE html>
         return;
       }
       const newHtml = queue.map((item, idx) => {
+        const xStr = (typeof item.x === 'number') ? item.x.toFixed(3) : item.x;
+        const yStr = (typeof item.y === 'number') ? item.y.toFixed(3) : item.y;
+        const zStr = (typeof item.z === 'number') ? item.z.toFixed(3) : item.z;
         return `
           <div class="queue-item">
             <span class="queue-item-info">${idx + 1}. ${item.label}</span>
-            <span class="queue-item-coord">Base: (${item.x}, ${item.y}, ${item.z})</span>
+            <span class="queue-item-coord">Base: (${xStr}, ${yStr}, ${zStr})</span>
             <button type="button" class="queue-item-remove" onclick="dequeueItem(${item.queue_uid})" title="Remove item">X</button>
           </div>
         `;
@@ -4406,6 +4662,149 @@ INDEX_HTML = """<!DOCTYPE html>
         container.innerHTML = newHtml;
         lastQueueHtml = newHtml;
       }
+    }
+
+    // ==========================================
+    // DIRECT CLICK-TO-PICK ON CAMERA FEED
+    // ==========================================
+    function getVideoClickCoords(e) {
+      const container = document.getElementById('video-container');
+      const img = document.getElementById('stream-img');
+      if (!container || !img) return null;
+
+      const rect = img.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      // Image native dimensions (defaults to 640x480 if natural dimensions not yet ready)
+      const natW = img.naturalWidth || 640;
+      const natH = img.naturalHeight || 480;
+      const imgAspect = natW / natH;
+      const containerAspect = rect.width / rect.height;
+
+      let renderedW = rect.width;
+      let renderedH = rect.height;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (containerAspect > imgAspect) {
+        // Pillarboxed (letterboxed on left and right)
+        renderedW = rect.height * imgAspect;
+        renderedH = rect.height;
+        offsetX = (rect.width - renderedW) / 2;
+        offsetY = 0;
+      } else {
+        // Letterboxed on top and bottom
+        renderedW = rect.width;
+        renderedH = rect.width / imgAspect;
+        offsetX = 0;
+        offsetY = (rect.height - renderedH) / 2;
+      }
+
+      const imgX = clickX - offsetX;
+      const imgY = clickY - offsetY;
+
+      if (imgX < 0 || imgX > renderedW || imgY < 0 || imgY > renderedH) {
+        return null;
+      }
+
+      const frameX = (imgX / renderedW) * natW;
+      const frameY = (imgY / renderedH) * natH;
+
+      return {
+        clickX,
+        clickY,
+        frameX,
+        frameY
+      };
+    }
+
+    function findTubeAtCoords(frameX, frameY) {
+      if (!currentTubes || currentTubes.length === 0) return null;
+
+      // Generous hit-test padding in frame pixels
+      const pad = 24;
+      let bestTube = null;
+      let bestDist = Infinity;
+
+      for (const t of currentTubes) {
+        let inside = false;
+        let dist = Infinity;
+
+        if (t.bbox_xyxy && t.bbox_xyxy.length === 4) {
+          const [x1, y1, x2, y2] = t.bbox_xyxy;
+          if (frameX >= (x1 - pad) && frameX <= (x2 + pad) && frameY >= (y1 - pad) && frameY <= (y2 + pad)) {
+            inside = true;
+          }
+        }
+
+        if (t.center_px && t.center_px.length === 2) {
+          const [cx, cy] = t.center_px;
+          dist = Math.hypot(frameX - cx, frameY - cy);
+        }
+
+        if (inside || dist < 75) {
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestTube = t;
+          }
+        }
+      }
+
+      return bestTube;
+    }
+
+    function handleVideoMouseMove(e) {
+      const container = document.getElementById('video-container');
+      if (!container) return;
+      const coords = getVideoClickCoords(e);
+      if (!coords) {
+        container.style.cursor = 'default';
+        container.title = '';
+        return;
+      }
+      const tube = findTubeAtCoords(coords.frameX, coords.frameY);
+      if (tube) {
+        container.style.cursor = 'pointer';
+        container.title = `Click to add Tube #${tube.id} to picking queue`;
+      } else {
+        container.style.cursor = 'default';
+        container.title = '';
+      }
+    }
+
+    function handleVideoClick(e) {
+      const coords = getVideoClickCoords(e);
+      if (!coords) return;
+      const tube = findTubeAtCoords(coords.frameX, coords.frameY);
+      if (tube) {
+        showVideoClickFeedback(coords.clickX, coords.clickY, `Tube #${tube.id}`);
+        enqueueTube(tube.id);
+      }
+    }
+
+    function showVideoClickFeedback(x, y, text) {
+      const layer = document.getElementById('video-feedback-layer');
+      if (!layer) return;
+
+      const ripple = document.createElement('div');
+      ripple.className = 'video-click-ripple';
+      ripple.style.left = `${x}px`;
+      ripple.style.top = `${y}px`;
+
+      const pill = document.createElement('div');
+      pill.className = 'video-click-pill';
+      pill.style.left = `${x}px`;
+      pill.style.top = `${y}px`;
+      pill.textContent = `+ ${text}`;
+
+      layer.appendChild(ripple);
+      layer.appendChild(pill);
+
+      setTimeout(() => {
+        if (ripple.parentNode === layer) layer.removeChild(ripple);
+        if (pill.parentNode === layer) layer.removeChild(pill);
+      }, 700);
     }
 
     let isEnqueuing = false;
@@ -4710,9 +5109,11 @@ INDEX_HTML = """<!DOCTYPE html>
     // ==========================================
     let currentApproachWps = [];
     let currentRetreatWps = [];
+    let editingWaypoint = null; // { type: 'approach' | 'retreat', index: number } | null
 
     async function loadWaypoints() {
       try {
+        editingWaypoint = null;
         const res = await fetch('/api/waypoints');
         const data = await res.json();
         currentApproachWps = data.approach || [];
@@ -4737,6 +5138,92 @@ INDEX_HTML = """<!DOCTYPE html>
       }
     }
 
+    function openEditWaypoint(type, idx, evt) {
+      if (evt && evt.target && evt.target.closest('.queue-item-remove')) return;
+      editingWaypoint = { type: type, index: idx };
+      renderWaypointsList('approach', currentApproachWps);
+      renderWaypointsList('retreat', currentRetreatWps);
+    }
+
+    async function closeEditWaypoint(evt, save = true) {
+      if (evt) evt.stopPropagation();
+      if (save && editingWaypoint) {
+        applyWaypointEdits(editingWaypoint.type, editingWaypoint.index);
+        await syncWaypoints(true);
+      }
+      editingWaypoint = null;
+      renderWaypointsList('approach', currentApproachWps);
+      renderWaypointsList('retreat', currentRetreatWps);
+    }
+
+    function applyWaypointEdits(type, idx) {
+      const wps = type === 'approach' ? currentApproachWps : currentRetreatWps;
+      if (!wps || !wps[idx]) return;
+      const wp = wps[idx];
+      const isJoint = ('joints' in wp && Array.isArray(wp.joints));
+      const isAbs = !isJoint && ('x' in wp || 'y' in wp || 'z' in wp);
+
+      if (isJoint) {
+        const j = [];
+        for (let i = 0; i < 6; i++) {
+          const el = document.getElementById(`edit-wp-j${i}`);
+          j.push(el ? (parseFloat(el.value) || 0.0) : (wp.joints[i] ?? 0.0));
+        }
+        wp.joints = j;
+      } else if (isAbs) {
+        const elX = document.getElementById('edit-wp-x');
+        const elY = document.getElementById('edit-wp-y');
+        const elZ = document.getElementById('edit-wp-z');
+        const elRoll = document.getElementById('edit-wp-roll');
+        const elPitch = document.getElementById('edit-wp-pitch');
+        const elYaw = document.getElementById('edit-wp-yaw');
+        if (elX) wp.x = parseFloat(elX.value) || 0.0;
+        if (elY) wp.y = parseFloat(elY.value) || 0.0;
+        if (elZ) wp.z = parseFloat(elZ.value) || 0.0;
+        if (elRoll) wp.roll = parseFloat(elRoll.value) || 0.0;
+        if (elPitch) wp.pitch = parseFloat(elPitch.value) || 0.0;
+        if (elYaw) wp.yaw = parseFloat(elYaw.value) || 0.0;
+      } else {
+        const elDx = document.getElementById('edit-wp-dx');
+        const elDy = document.getElementById('edit-wp-dy');
+        const elDz = document.getElementById('edit-wp-dz');
+        const elRoll = document.getElementById('edit-wp-roll');
+        const elPitch = document.getElementById('edit-wp-pitch');
+        const elYaw = document.getElementById('edit-wp-yaw');
+        if (elDx) wp.dx = parseFloat(elDx.value) || 0.0;
+        if (elDy) wp.dy = parseFloat(elDy.value) || 0.0;
+        if (elDz) wp.dz = parseFloat(elDz.value) || 0.0;
+        if (elRoll) wp.roll = parseFloat(elRoll.value) || 0.0;
+        if (elPitch) wp.pitch = parseFloat(elPitch.value) || 0.0;
+        if (elYaw) wp.yaw = parseFloat(elYaw.value) || 0.0;
+      }
+
+      const elDur = document.getElementById('edit-wp-dur');
+      if (elDur) wp.duration = Math.max(0.1, parseFloat(elDur.value) || 2.0);
+
+      const elGrip = document.getElementById('edit-wp-grip');
+      if (elGrip) {
+        if (elGrip.value) wp.gripper = elGrip.value;
+        else delete wp.gripper;
+      }
+
+      const elPause = document.getElementById('edit-wp-pause');
+      if (elPause) {
+        if (elPause.checked) wp.pause = true;
+        else delete wp.pause;
+      }
+    }
+
+    async function saveEditWaypoint(type, idx, evt) {
+      if (evt) evt.stopPropagation();
+      applyWaypointEdits(type, idx);
+      await syncWaypoints(true);
+      editingWaypoint = null;
+      renderWaypointsList('approach', currentApproachWps);
+      renderWaypointsList('retreat', currentRetreatWps);
+      showToast(`Waypoint #${idx + 1} (${type}) updated and saved!`);
+    }
+
     function renderWaypointsList(type, wps) {
       const containerId = type === 'approach' ? 'approach-wps-list' : 'retreat-wps-list';
       const countId = type === 'approach' ? 'approach-count' : 'retreat-count';
@@ -4750,6 +5237,7 @@ INDEX_HTML = """<!DOCTYPE html>
       }
 
       container.innerHTML = wps.map((wp, idx) => {
+        const isEditing = editingWaypoint && editingWaypoint.type === type && editingWaypoint.index === idx;
         const isJoint = ('joints' in wp && Array.isArray(wp.joints));
         const isAbs = !isJoint && ('x' in wp || 'y' in wp || 'z' in wp);
         let modeBadge = '';
@@ -4775,13 +5263,104 @@ INDEX_HTML = """<!DOCTYPE html>
         const gripText = wp.gripper ? ` | Grip: ${wp.gripper}` : '';
         const pauseText = wp.pause ? ` | Pause` : '';
 
-        return `
-          <div class="wp-item-row">
-            <div class="wp-item-desc">
-              <div><strong>#${idx + 1}</strong> ${modeBadge} <span style="font-family:monospace; color:${isJoint ? '#22d3ee' : '#38bdf8'};">${posText}</span></div>
-              <div style="font-size:0.75rem; color:var(--text-muted);">${rpyText} | ${durText}${gripText}${pauseText}</div>
+        if (!isEditing) {
+          return `
+            <div class="wp-item-row" onclick="openEditWaypoint('${type}', ${idx}, event)" title="Click to enlarge and modify waypoint #${idx + 1}">
+              <div class="wp-item-desc">
+                <div><strong>#${idx + 1}</strong> ${modeBadge} <span style="font-family:monospace; color:${isJoint ? '#22d3ee' : '#38bdf8'};">${posText}</span></div>
+                <div style="font-size:0.75rem; color:var(--text-muted);">${rpyText} | ${durText}${gripText}${pauseText}</div>
+              </div>
+              <button class="queue-item-remove" onclick="removeWaypoint('${type}', ${idx}, event)" title="Remove waypoint">X</button>
             </div>
-            <button class="queue-item-remove" onclick="removeWaypoint('${type}', ${idx})" title="Remove waypoint">X</button>
+          `;
+        }
+
+        let fieldsHtml = '';
+        if (isJoint) {
+          fieldsHtml = `
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">J1 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j0" value="${wp.joints[0] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">J2 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j1" value="${wp.joints[1] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">J3 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j2" value="${wp.joints[2] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">J4 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j3" value="${wp.joints[3] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">J5 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j4" value="${wp.joints[4] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">J6 (rad)</label><input type="number" step="0.01" class="wp-inline-input" id="edit-wp-j5" value="${wp.joints[5] ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+          `;
+        } else if (isAbs) {
+          fieldsHtml = `
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">X (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-x" value="${wp.x ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Y (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-y" value="${wp.y ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Z (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-z" value="${wp.z ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">Roll (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-roll" value="${wp.roll ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Pitch (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-pitch" value="${wp.pitch ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Yaw (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-yaw" value="${wp.yaw ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+          `;
+        } else {
+          fieldsHtml = `
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">dx (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-dx" value="${wp.dx ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">dy (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-dy" value="${wp.dy ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">dz (m)</label><input type="number" step="0.005" class="wp-inline-input" id="edit-wp-dz" value="${wp.dz ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+            <div class="wp-edit-grid-3">
+              <div class="wp-inline-field"><label class="wp-inline-label">Roll (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-roll" value="${wp.roll ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Pitch (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-pitch" value="${wp.pitch ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+              <div class="wp-inline-field"><label class="wp-inline-label">Yaw (rad)</label><input type="number" step="0.05" class="wp-inline-input" id="edit-wp-yaw" value="${wp.yaw ?? 0}" oninput="applyWaypointEdits('${type}', ${idx})"></div>
+            </div>
+          `;
+        }
+
+        const motionGridHtml = `
+          <div class="wp-edit-grid-3">
+            <div class="wp-inline-field">
+              <label class="wp-inline-label">Duration (s)</label>
+              <input type="number" step="0.2" min="0.1" class="wp-inline-input" id="edit-wp-dur" value="${wp.duration ?? 2.0}" oninput="applyWaypointEdits('${type}', ${idx})">
+            </div>
+            <div class="wp-inline-field">
+              <label class="wp-inline-label">Gripper</label>
+              <select class="wp-inline-select" id="edit-wp-grip" onchange="applyWaypointEdits('${type}', ${idx})">
+                <option value="" ${!wp.gripper ? 'selected' : ''}>None (keep)</option>
+                <option value="open" ${wp.gripper === 'open' ? 'selected' : ''}>Open</option>
+                <option value="close" ${wp.gripper === 'close' ? 'selected' : ''}>Close</option>
+              </select>
+            </div>
+            <div class="wp-inline-field">
+              <label class="wp-inline-check">
+                <input type="checkbox" id="edit-wp-pause" ${wp.pause ? 'checked' : ''} onchange="applyWaypointEdits('${type}', ${idx})">
+                Pause
+              </label>
+            </div>
+          </div>
+        `;
+
+        return `
+          <div class="wp-item-row wp-item-editing" onclick="event.stopPropagation()">
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:6px;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <strong style="color:var(--text); font-size:0.88rem;">#${idx + 1}</strong>
+                ${modeBadge}
+                <span style="font-size:0.72rem; color:#38bdf8; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Quick Modify</span>
+              </div>
+              <button class="wp-edit-close-btn" onclick="closeEditWaypoint(event, true)" title="Exit and return back to normal">✕</button>
+            </div>
+
+            ${fieldsHtml}
+            ${motionGridHtml}
+
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; padding-top:8px; border-top:1px solid rgba(255,255,255,0.06); margin-top:2px;">
+              <button class="wp-edit-btn-danger" onclick="removeWaypoint('${type}', ${idx}, event)">Delete Waypoint</button>
+              <div style="display:flex; gap:8px;">
+                <button class="btn-sm" style="background:var(--card-bg-elevated); color:var(--text-muted); border:1px solid var(--card-border);" onclick="closeEditWaypoint(event, false)">Cancel</button>
+                <button class="btn-sm" style="background:var(--primary); color:#ffffff; border:1px solid rgba(255,255,255,0.2); font-weight:600;" onclick="saveEditWaypoint('${type}', ${idx}, event)">Save Changes</button>
+              </div>
+            </div>
           </div>
         `;
       }).join('');
@@ -4831,7 +5410,15 @@ INDEX_HTML = """<!DOCTYPE html>
       await syncWaypoints(true);
     }
 
-    async function removeWaypoint(type, idx) {
+    async function removeWaypoint(type, idx, evt) {
+      if (evt) evt.stopPropagation();
+      if (editingWaypoint && editingWaypoint.type === type) {
+        if (editingWaypoint.index === idx) {
+          editingWaypoint = null;
+        } else if (editingWaypoint.index > idx) {
+          editingWaypoint.index--;
+        }
+      }
       if (type === 'approach') {
         currentApproachWps.splice(idx, 1);
       } else {
