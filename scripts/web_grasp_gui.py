@@ -2284,101 +2284,257 @@ INDEX_HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     :root {
-      --bg: #0f131a;
-      --card-bg: #181e2b;
-      --card-border: #263143;
-      --accent: #2563eb;
-      --accent-hover: #1d4ed8;
-      --green: #10b981;
-      --green-hover: #059669;
-      --amber: #f59e0b;
-      --amber-hover: #d97706;
-      --red: #ef4444;
+      --bg: #0b0f19;
+      --card-bg: #131a29;
+      --card-bg-elevated: #1a2234;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-border-subtle: rgba(255, 255, 255, 0.05);
+      --surface-inset: #090d16;
+      --surface-inset-hover: #0f1524;
+      --primary: #0a84ff;
+      --primary-hover: #0077ed;
+      --primary-active: #0062cc;
+      --success: #30d158;
+      --success-hover: #28b84c;
+      --warning: #ff9f0a;
+      --warning-hover: #e08b08;
+      --danger: #ff453a;
+      --danger-hover: #e0382e;
+      --cyan: #38bdf8;
+      --cyan-muted: #7dd3fc;
+      --text-primary: #f5f5f7;
       --text: #e2e8f0;
       --text-muted: #94a3b8;
+      --text-faint: #64748b;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
-    
-    /* Top Navbar */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Top Navigation Bar */
     header {
       background: var(--card-bg);
       border-bottom: 1px solid var(--card-border);
-      padding: 12px 24px;
+      padding: 0 24px;
+      height: 56px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
     }
-    .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.1rem; }
-    .nav-tabs { display: flex; gap: 8px; }
+    .brand {
+      display: flex;
+      align-items: center;
+      font-weight: 600;
+      font-size: 0.95rem;
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
+      flex-shrink: 0;
+    }
+    .nav-tabs {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 3px;
+      gap: 2px;
+      align-items: center;
+    }
     .tab-btn {
       background: transparent;
       border: 1px solid transparent;
       color: var(--text-muted);
-      padding: 8px 16px;
-      border-radius: 6px;
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
-      font-weight: 600;
-      transition: all 0.2s;
+      font-weight: 500;
+      font-size: 0.82rem;
+      transition: all 0.15s ease;
+      white-space: nowrap;
     }
     .tab-btn.active {
-      background: #222b3d;
-      color: #fff;
-      border-color: var(--card-border);
+      background: var(--card-bg-elevated);
+      color: #ffffff;
+      border-color: rgba(255, 255, 255, 0.1);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+      font-weight: 600;
     }
-    .tab-btn:hover:not(.active) { color: var(--text); }
+    .tab-btn:hover:not(.active) {
+      color: var(--text-primary);
+    }
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .btn-guide-pill {
+      background: rgba(10, 132, 255, 0.08);
+      border: 1px solid rgba(10, 132, 255, 0.25);
+      color: #60a5fa;
+      padding: 4px 12px;
+      font-size: 0.76rem;
+      font-weight: 600;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-guide-pill:hover {
+      background: rgba(10, 132, 255, 0.16);
+      border-color: rgba(10, 132, 255, 0.4);
+    }
+
+    /* Status Pills */
     .status-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
       padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.8rem;
-      font-weight: 700;
+      font-size: 0.74rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
-    .status-live { background: rgba(16, 185, 129, 0.15); color: var(--green); border: 1px solid var(--green); }
-    .status-frozen { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid #60a5fa; }
-    .status-executing { background: rgba(245, 158, 11, 0.15); color: var(--amber); border: 1px solid var(--amber); }
-    .status-paused { background: rgba(239, 68, 68, 0.2); color: var(--red); border: 1px solid var(--red); animation: pulse 1.5s infinite; }
+    .status-live { background: rgba(48, 209, 88, 0.12); color: var(--success); border: 1px solid rgba(48, 209, 88, 0.28); }
+    .status-frozen { background: rgba(10, 132, 255, 0.12); color: #60a5fa; border: 1px solid rgba(10, 132, 255, 0.28); }
+    .status-executing { background: rgba(255, 159, 10, 0.12); color: var(--warning); border: 1px solid rgba(255, 159, 10, 0.28); }
+    .status-paused { background: rgba(255, 69, 58, 0.15); color: var(--danger); border: 1px solid var(--danger); animation: pulse 1.5s infinite; }
+    .status-waypoints {
+      background: rgba(99, 102, 241, 0.1);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.22);
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .status-waypoints:hover {
+      background: rgba(99, 102, 241, 0.18);
+      border-color: rgba(99, 102, 241, 0.4);
+    }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-    /* Main Container */
-    main { flex: 1; padding: 20px; max-width: 1500px; margin: 0 auto; width: 100%; }
+    /* Robot Hardware LED Indicator */
+    .robot-led-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.74rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      transition: all 0.25s ease;
+      white-space: nowrap;
+    }
+    .led-bulb {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      transition: all 0.25s ease;
+      flex-shrink: 0;
+    }
+    .led-bulb.led-on {
+      background-color: var(--success);
+      box-shadow: 0 0 6px var(--success), 0 0 12px rgba(48, 209, 88, 0.6);
+      border: 1px solid #34d399;
+    }
+    .led-bulb.led-off {
+      background-color: #475569;
+      box-shadow: none;
+      border: 1px solid #334155;
+    }
+    .led-bulb.led-pending {
+      background-color: var(--warning);
+      box-shadow: 0 0 6px var(--warning);
+      border: 1px solid #fbbf24;
+      animation: led-pulse 0.8s infinite alternate;
+    }
+    @keyframes led-pulse {
+      0% { opacity: 0.35; }
+      100% { opacity: 1; }
+    }
+
+    /* Main Container & Tabs */
+    main {
+      flex: 1;
+      padding: 24px;
+      max-width: 1520px;
+      margin: 0 auto;
+      width: 100%;
+    }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
-    /* Layout for Station */
-    .station-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 20px; }
-    @media (max-width: 1024px) { .station-grid { grid-template-columns: 1fr; } }
-
+    /* Cards */
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 10px;
-      padding: 16px;
+      border-radius: var(--radius-lg);
+      padding: 18px 20px;
       margin-bottom: 20px;
+      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.4);
     }
     .card-title {
-      font-size: 0.95rem;
-      font-weight: 700;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
       color: var(--text-muted);
-      margin-bottom: 12px;
+      margin-bottom: 14px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+    }
+
+    /* Station Layout */
+    .station-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.95fr;
+      gap: 20px;
+      align-items: start;
+    }
+    @media (max-width: 1100px) {
+      .station-grid { grid-template-columns: 1fr; }
     }
 
     /* Video Frame */
     .video-container {
       position: relative;
       background: #000;
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       overflow: hidden;
       aspect-ratio: 16 / 9;
       display: flex;
       justify-content: center;
       align-items: center;
+      border: 1px solid var(--card-border);
     }
     .video-container img { width: 100%; height: 100%; object-fit: contain; }
 
@@ -2386,207 +2542,304 @@ INDEX_HTML = """<!DOCTYPE html>
     .tube-buttons-bar {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: 8px;
       margin-bottom: 12px;
-      min-height: 48px;
+      min-height: 46px;
       align-items: center;
     }
     .tube-btn {
-      background: #2563eb;
-      color: #ffffff;
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      padding: 10px 22px;
-      min-width: 64px;
-      min-height: 44px;
-      border-radius: 8px;
-      font-weight: 700;
+      background: var(--card-bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      padding: 8px 18px;
+      min-width: 58px;
+      min-height: 40px;
+      border-radius: var(--radius-sm);
+      font-weight: 600;
       cursor: pointer;
-      font-size: 1.05rem;
-      letter-spacing: 0.5px;
+      font-size: 0.92rem;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
-      transition: transform 0.08s ease, background 0.15s ease, box-shadow 0.15s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: all 0.12s ease;
       user-select: none;
       -webkit-user-select: none;
       touch-action: manipulation;
     }
     .tube-btn:hover {
-      background: #1d4ed8;
-      transform: translateY(-2px);
-      box-shadow: 0 4px 14px rgba(29, 78, 216, 0.5);
+      background: #232e45;
+      border-color: rgba(10, 132, 255, 0.4);
+      color: #60a5fa;
+      transform: translateY(-1px);
     }
     .tube-btn:active {
-      transform: scale(0.92);
-      background: #1e40af;
-      box-shadow: 0 1px 3px rgba(30, 64, 175, 0.4);
+      transform: scale(0.94);
     }
     .tube-btn.queued {
-      background: #059669;
-      border-color: rgba(52, 211, 153, 0.3);
-      box-shadow: 0 2px 8px rgba(5, 150, 105, 0.35);
+      background: rgba(48, 209, 88, 0.14);
+      color: var(--success);
+      border-color: rgba(48, 209, 88, 0.35);
+      box-shadow: 0 0 10px rgba(48, 209, 88, 0.15);
     }
     .tube-btn.queued:hover {
-      background: #047857;
-      box-shadow: 0 4px 14px rgba(4, 120, 87, 0.5);
+      background: rgba(48, 209, 88, 0.22);
+      border-color: rgba(48, 209, 88, 0.5);
     }
 
     /* Queue List */
     .queue-list {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      max-height: 200px;
+      gap: 6px;
+      max-height: 190px;
       overflow-y: auto;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
     }
     .queue-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #111622;
-      border: 1px solid var(--card-border);
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 0.9rem;
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      padding: 7px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
     }
-    .queue-item-info { font-weight: 600; }
-    .queue-item-coord { color: var(--text-muted); font-size: 0.8rem; margin-left: 8px; }
+    .queue-item-info { font-weight: 500; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .queue-item-coord { color: var(--text-muted); font-size: 0.78rem; margin-left: 8px; }
     .queue-item-remove {
       background: transparent;
-      color: var(--red);
+      color: var(--text-muted);
       border: none;
       cursor: pointer;
-      font-size: 1.1rem;
+      font-size: 0.95rem;
       padding: 2px 6px;
+      border-radius: 4px;
+      transition: all 0.15s ease;
     }
-    .empty-queue-msg { color: var(--text-muted); font-size: 0.85rem; font-style: italic; }
+    .queue-item-remove:hover {
+      color: var(--danger);
+      background: rgba(255, 69, 58, 0.1);
+    }
+    .empty-queue-msg { color: var(--text-faint); font-size: 0.82rem; font-style: italic; }
 
     /* Actions Panel */
-    .actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
     .btn-main {
-      padding: 12px;
-      border-radius: 8px;
-      border: none;
-      font-weight: 700;
-      font-size: 1rem;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+      background: var(--card-bg-elevated);
+      color: var(--text);
+      font-weight: 500;
+      font-size: 0.88rem;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
-    .btn-grasp { background: var(--green); color: #fff; grid-column: span 2; font-size: 1.1rem; }
-    .btn-grasp:hover { background: var(--green-hover); }
-    .btn-grasp:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn-stop {
-      background: #dc2626;
-      color: #fff;
+    .btn-main:hover {
+      background: #232e45;
+      border-color: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
+    }
+    .btn-main:active {
+      transform: scale(0.98);
+    }
+    .btn-grasp {
+      background: var(--primary);
+      border-color: rgba(255, 255, 255, 0.15);
+      color: #ffffff;
       grid-column: span 2;
-      font-size: 1.05rem;
+      font-size: 0.96rem;
+      font-weight: 600;
+      padding: 12px;
+      box-shadow: 0 2px 8px rgba(10, 132, 255, 0.35);
+    }
+    .btn-grasp:hover {
+      background: var(--primary-hover);
+      border-color: rgba(255, 255, 255, 0.25);
+      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.45);
+    }
+    .btn-grasp:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      background: #1e293b;
+      border-color: var(--card-border);
+      box-shadow: none;
+    }
+    .btn-stop {
+      background: var(--danger);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #ffffff;
+      grid-column: span 2;
+      font-size: 0.92rem;
       font-weight: 700;
       letter-spacing: 0.05em;
-      border: 1px solid #ef4444;
+      padding: 11px;
+      box-shadow: 0 2px 8px rgba(255, 69, 58, 0.3);
     }
     .btn-stop:hover {
-      background: #b91c1c;
-      border-color: #f87171;
-      box-shadow: 0 0 12px rgba(220, 38, 38, 0.45);
+      background: var(--danger-hover);
+      border-color: rgba(255, 255, 255, 0.35);
+      box-shadow: 0 0 16px rgba(255, 69, 58, 0.45);
     }
-    .btn-enable { background: #059669; color: #fff; }
-    .btn-enable:hover { background: #047857; }
-    .btn-disable { background: #dc2626; color: #fff; }
-    .btn-disable:hover { background: #b91c1c; }
-    .btn-center { background: var(--accent); color: #fff; }
-    .btn-center:hover { background: var(--accent-hover); }
-    .btn-home { background: #6366f1; color: #fff; }
-    .btn-home:hover { background: #4f46e5; }
-    .btn-ready { background: #0891b2; color: #fff; }
-    .btn-ready:hover { background: #0e7490; }
-    .btn-reset { background: #334155; color: #fff; }
-    .btn-reset:hover { background: #475569; }
-    .btn-resume { background: var(--amber); color: #000; grid-column: span 2; display: none; }
-    .btn-resume:hover { background: var(--amber-hover); }
+    .btn-enable {
+      background: var(--card-bg-elevated);
+      color: var(--text);
+      border-color: var(--card-border);
+    }
+    .btn-enable:hover {
+      background: #232e45;
+      border-color: rgba(48, 209, 88, 0.4);
+      color: var(--success);
+    }
+    .btn-disable {
+      background: var(--card-bg-elevated);
+      color: var(--text);
+      border-color: var(--card-border);
+    }
+    .btn-disable:hover {
+      background: #232e45;
+      border-color: rgba(255, 69, 58, 0.4);
+      color: var(--danger);
+    }
+    .btn-center, .btn-home, .btn-ready, .btn-reset {
+      background: var(--card-bg-elevated);
+      color: var(--text);
+      border-color: var(--card-border);
+    }
+    .btn-center:hover, .btn-home:hover, .btn-ready:hover, .btn-reset:hover {
+      background: #232e45;
+      border-color: rgba(255, 255, 255, 0.16);
+      color: #ffffff;
+    }
+    .btn-resume {
+      background: var(--warning);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #000000;
+      font-weight: 700;
+      grid-column: span 2;
+      display: none;
+    }
+    .btn-resume:hover { background: var(--warning-hover); }
     .btn-resume.active { display: flex; animation: pulse 1s infinite; }
 
     /* Waypoint Editor Tab Styles */
-    .wp-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    @media (max-width: 900px) { .wp-editor-grid { grid-template-columns: 1fr; } }
+    .wp-editor-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      align-items: start;
+    }
+    @media (max-width: 960px) {
+      .wp-editor-grid { grid-template-columns: 1fr; }
+    }
     .wps-table-container {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
       max-height: 240px;
       overflow-y: auto;
       margin-bottom: 16px;
-      background: #090c12;
-      border: 1px solid var(--card-border);
-      border-radius: 6px;
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      border-radius: var(--radius-sm);
       padding: 8px;
     }
     .wp-item-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #141b27;
-      padding: 8px 10px;
-      border-radius: 4px;
-      font-size: 0.85rem;
-      border: 1px solid #1f293d;
+      background: var(--card-bg-elevated);
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      border: 1px solid var(--card-border-subtle);
+      transition: all 0.15s ease;
     }
-    .wp-item-desc { display: flex; flex-direction: column; gap: 3px; }
+    .wp-item-row:hover {
+      border-color: rgba(255, 255, 255, 0.1);
+      background: #202a3f;
+    }
+    .wp-item-desc { display: flex; flex-direction: column; gap: 3px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     .wp-badge-mode {
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       padding: 2px 6px;
       border-radius: 4px;
-      font-weight: 700;
+      font-weight: 600;
       text-transform: uppercase;
       display: inline-block;
       width: fit-content;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
     }
-    .wp-badge-rel { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
-    .wp-badge-abs { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+    .wp-badge-rel { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.28); }
+    .wp-badge-abs { background: rgba(48, 209, 88, 0.12); color: #30d158; border: 1px solid rgba(48, 209, 88, 0.28); }
     .wp-form-box {
-      background: #111622;
-      border: 1px solid var(--card-border);
-      border-radius: 6px;
-      padding: 12px;
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 14px;
     }
-    .wp-form-title { font-size: 0.85rem; font-weight: 700; color: var(--text-muted); margin-bottom: 10px; }
-    .btn-sm { padding: 4px 10px; border-radius: 4px; border: none; font-size: 0.8rem; font-weight: 600; cursor: pointer; }
-
-    /* Enhanced Console & Debugging Log */
-    .console-box {
-      background: #060910;
+    .wp-form-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .btn-sm {
+      padding: 5px 12px;
+      border-radius: var(--radius-sm);
       border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
-      font-size: 0.86rem;
+      font-size: 0.78rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-sm:hover {
+      border-color: rgba(255, 255, 255, 0.18);
+    }
+
+    /* Console & Debugging Log */
+    .console-box {
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      font-variant-numeric: tabular-nums;
       line-height: 1.55;
-      color: #94a3b8;
-      height: 340px;
+      color: var(--text-muted);
+      height: 320px;
       min-height: 220px;
       max-height: 600px;
       overflow-y: auto;
       resize: vertical;
       box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
     }
-    .console-box::-webkit-scrollbar {
-      width: 8px;
-    }
+    .console-box::-webkit-scrollbar { width: 6px; }
     .console-box::-webkit-scrollbar-thumb {
-      background: #334155;
-      border-radius: 4px;
+      background: #1e293b;
+      border-radius: 3px;
     }
-    .console-box::-webkit-scrollbar-thumb:hover {
-      background: #475569;
-    }
+    .console-box::-webkit-scrollbar-thumb:hover { background: #334155; }
 
-    /* Log Entry Types */
     .log-line {
       display: flex;
       flex-direction: column;
@@ -2595,102 +2848,47 @@ INDEX_HTML = """<!DOCTYPE html>
       border-radius: 4px;
       border-left: 3px solid transparent;
       word-break: break-word;
-      transition: background 0.15s;
+      transition: background 0.12s;
     }
-    .log-line:hover {
-      background: rgba(255, 255, 255, 0.03);
-    }
-    .log-row-main {
-      display: flex;
-      gap: 8px;
-      align-items: baseline;
-    }
+    .log-line:hover { background: rgba(255, 255, 255, 0.03); }
+    .log-row-main { display: flex; gap: 8px; align-items: baseline; }
     .log-time {
-      color: #64748b;
-      font-size: 0.78rem;
+      color: var(--text-faint);
+      font-size: 0.76rem;
       flex-shrink: 0;
       font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
     .log-badge {
-      font-size: 0.68rem;
+      font-size: 0.66rem;
       font-weight: 700;
       padding: 1px 5px;
       border-radius: 3px;
       text-transform: uppercase;
       flex-shrink: 0;
+      font-family: var(--font-mono);
     }
-    .log-msg {
-      flex: 1;
-    }
+    .log-msg { flex: 1; }
 
-    /* Info Level */
-    .log-info {
-      border-left-color: #38bdf8;
-      color: #cbd5e1;
-    }
-    .log-info .log-badge {
-      background: rgba(56, 189, 248, 0.15);
-      color: #38bdf8;
-    }
+    .log-info { border-left-color: var(--cyan); color: var(--text); }
+    .log-info .log-badge { background: rgba(56, 189, 248, 0.12); color: var(--cyan); }
+    .log-success { border-left-color: var(--success); background: rgba(48, 209, 88, 0.04); color: #86efac; }
+    .log-success .log-badge { background: rgba(48, 209, 88, 0.18); color: var(--success); }
+    .log-warning { border-left-color: var(--warning); background: rgba(255, 159, 10, 0.05); color: #fde68a; }
+    .log-warning .log-badge { background: rgba(255, 159, 10, 0.18); color: var(--warning); }
+    .log-error { border-left-color: var(--danger); background: rgba(255, 69, 58, 0.08); color: #fca5a5; font-weight: 500; }
+    .log-error .log-badge { background: rgba(255, 69, 58, 0.22); color: var(--danger); }
 
-    /* Success Level */
-    .log-success {
-      border-left-color: #10b981;
-      background: rgba(16, 185, 129, 0.06);
-      color: #6ee7b7;
-    }
-    .log-success .log-badge {
-      background: rgba(16, 185, 129, 0.2);
-      color: #34d399;
-    }
-
-    /* Warning Level */
-    .log-warning {
-      border-left-color: #f59e0b;
-      background: rgba(245, 158, 11, 0.08);
-      color: #fde68a;
-    }
-    .log-warning .log-badge {
-      background: rgba(245, 158, 11, 0.2);
-      color: #fbbf24;
-    }
-
-    /* Error Level */
-    .log-error {
-      border-left-color: #ef4444;
-      background: rgba(239, 68, 68, 0.12);
-      color: #fca5a5;
-      font-weight: 600;
-    }
-    .log-error .log-badge {
-      background: rgba(239, 68, 68, 0.25);
-      color: #f87171;
-    }
-
-    /* Traceback inside log */
-    .log-trace-details {
-      margin-top: 4px;
-      margin-left: 12px;
-      font-size: 0.8rem;
-    }
-    .log-trace-details summary {
-      color: #f87171;
-      cursor: pointer;
-      font-weight: 500;
-      text-decoration: underline;
-      user-select: none;
-    }
-    .log-trace-details summary:hover {
-      color: #fca5a5;
-    }
+    .log-trace-details { margin-top: 4px; margin-left: 12px; font-size: 0.78rem; }
+    .log-trace-details summary { color: var(--danger); cursor: pointer; font-weight: 500; text-decoration: underline; user-select: none; }
     .log-trace-pre {
       background: #020408;
-      border: 1px solid #7f1d1d;
+      border: 1px solid rgba(255, 69, 58, 0.3);
       border-radius: 4px;
       padding: 8px 10px;
       margin-top: 4px;
       color: #fca5a5;
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       white-space: pre-wrap;
       overflow-x: auto;
       max-height: 200px;
@@ -2698,40 +2896,21 @@ INDEX_HTML = """<!DOCTYPE html>
 
     /* Active Error Banner */
     .active-error-banner {
-      background: linear-gradient(135deg, rgba(153, 27, 27, 0.35), rgba(69, 10, 10, 0.45));
-      border: 1px solid #dc2626;
-      border-radius: 8px;
+      background: rgba(255, 69, 58, 0.08);
+      border: 1px solid rgba(255, 69, 58, 0.22);
+      border-left: 3px solid var(--danger);
+      border-radius: var(--radius-sm);
       padding: 10px 14px;
       margin-bottom: 12px;
-      animation: alertPulse 2s infinite ease-in-out;
     }
-    @keyframes alertPulse {
-      0%, 100% { border-color: #dc2626; box-shadow: 0 0 10px rgba(220, 38, 38, 0.2); }
-      50% { border-color: #ef4444; box-shadow: 0 0 16px rgba(239, 68, 68, 0.4); }
-    }
-    .error-banner-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 4px;
-    }
-    .error-banner-icon { font-size: 1.1rem; }
-    .error-banner-title {
-      font-weight: 700;
-      font-size: 0.85rem;
-      color: #f87171;
-      letter-spacing: 0.05em;
-    }
-    .error-banner-time {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      margin-left: auto;
-    }
+    .error-banner-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .error-banner-title { font-weight: 700; font-size: 0.8rem; color: var(--danger); letter-spacing: 0.05em; }
+    .error-banner-time { font-size: 0.72rem; color: var(--text-faint); margin-left: auto; font-family: var(--font-mono); }
     .error-banner-dismiss {
       background: transparent;
       border: none;
-      color: #94a3b8;
-      font-size: 1.1rem;
+      color: var(--text-muted);
+      font-size: 1rem;
       cursor: pointer;
       padding: 0 4px;
       line-height: 1;
@@ -2739,126 +2918,126 @@ INDEX_HTML = """<!DOCTYPE html>
     .error-banner-dismiss:hover { color: #fff; }
     .error-banner-msg {
       color: #fecaca;
-      font-size: 0.88rem;
-      font-weight: 600;
-      font-family: ui-monospace, monospace;
-      margin-left: 28px;
+      font-size: 0.84rem;
+      font-weight: 500;
+      font-family: var(--font-mono);
+      margin-left: 4px;
       word-break: break-word;
     }
-    .error-trace-details {
-      margin-top: 8px;
-      margin-left: 28px;
-    }
-    .error-trace-details summary {
-      color: #f87171;
-      font-size: 0.8rem;
-      font-weight: 600;
-      cursor: pointer;
-      user-select: none;
-    }
+    .error-trace-details { margin-top: 6px; margin-left: 4px; }
+    .error-trace-details summary { color: var(--danger); font-size: 0.76rem; font-weight: 500; cursor: pointer; user-select: none; }
     .error-trace-pre {
       background: #020408;
-      border: 1px solid rgba(220, 38, 38, 0.4);
-      border-radius: 6px;
-      padding: 10px;
-      margin-top: 6px;
+      border: 1px solid rgba(255, 69, 58, 0.25);
+      border-radius: 4px;
+      padding: 8px 10px;
+      margin-top: 4px;
       color: #fca5a5;
-      font-size: 0.78rem;
-      font-family: ui-monospace, monospace;
+      font-size: 0.76rem;
+      font-family: var(--font-mono);
       white-space: pre-wrap;
       overflow-x: auto;
-      max-height: 250px;
+      max-height: 220px;
     }
 
-    /* Error count pill */
     .log-pill {
-      font-size: 0.72rem;
-      font-weight: 700;
+      font-size: 0.7rem;
+      font-weight: 600;
       padding: 2px 8px;
       border-radius: 12px;
       display: inline-block;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
     }
-    .log-pill-clean {
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-    .log-pill-alert {
-      background: rgba(239, 68, 68, 0.2);
-      color: #f87171;
-      border: 1px solid #ef4444;
-      animation: pulse 1.5s infinite;
-    }
+    .log-pill-clean { background: rgba(48, 209, 88, 0.12); color: var(--success); border: 1px solid rgba(48, 209, 88, 0.25); }
+    .log-pill-alert { background: rgba(255, 69, 58, 0.15); color: var(--danger); border: 1px solid var(--danger); animation: pulse 1.5s infinite; }
 
-    /* Filter buttons */
     .log-filter-group {
       display: flex;
-      background: #090c12;
+      background: var(--surface-inset);
       border: 1px solid var(--card-border);
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       overflow: hidden;
     }
     .btn-filter {
       background: transparent;
       border: none;
       color: var(--text-muted);
-      font-size: 0.75rem;
-      font-weight: 600;
-      padding: 4px 8px;
+      font-size: 0.74rem;
+      font-weight: 500;
+      padding: 4px 10px;
       cursor: pointer;
       transition: all 0.15s;
     }
-    .btn-filter.active {
-      background: var(--card-border);
-      color: #fff;
-    }
-    .btn-filter:hover:not(.active) {
-      color: #cbd5e1;
-    }
+    .btn-filter.active { background: var(--card-bg-elevated); color: #fff; }
+    .btn-filter:hover:not(.active) { color: var(--text); }
 
     /* Configuration Tab */
-    .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
     .form-group { margin-bottom: 12px; }
-    .form-group label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+    .form-group label {
+      display: block;
+      font-size: 0.76rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
     .form-group input, .form-group select {
       width: 100%;
-      background: #090c12;
+      background: var(--surface-inset);
       border: 1px solid var(--card-border);
-      color: #fff;
-      padding: 8px;
-      border-radius: 6px;
-      font-size: 0.9rem;
+      color: var(--text-primary);
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      transition: all 0.15s ease;
+    }
+    .form-group input:focus, .form-group select:focus {
+      border-color: var(--primary);
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.2);
     }
     .btn-save-cfg {
-      background: var(--green);
+      background: var(--primary);
       color: #fff;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 6px;
-      font-weight: 700;
-      font-size: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 10px 22px;
+      border-radius: var(--radius-sm);
+      font-weight: 600;
+      font-size: 0.88rem;
       cursor: pointer;
       margin-top: 10px;
+      transition: all 0.15s ease;
+      box-shadow: 0 2px 8px rgba(10, 132, 255, 0.3);
+    }
+    .btn-save-cfg:hover {
+      background: var(--primary-hover);
+      box-shadow: 0 4px 14px rgba(10, 132, 255, 0.4);
     }
     .toast {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
-      background: var(--green);
-      color: #fff;
-      padding: 12px 24px;
-      border-radius: 6px;
-      font-weight: 600;
+      bottom: 24px;
+      right: 24px;
+      background: var(--card-bg-elevated);
+      color: var(--text-primary);
+      border: 1px solid var(--card-border);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      padding: 12px 20px;
+      border-radius: var(--radius-md);
+      font-weight: 500;
+      font-size: 0.86rem;
       display: none;
-      z-index: 100;
+      z-index: 200;
     }
 
     /* Guide Tab */
     .guide-banner {
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.15) 0%, rgba(16, 185, 129, 0.1) 100%);
-      border: 1px solid rgba(59, 130, 246, 0.3);
-      border-radius: 10px;
-      padding: 20px 24px;
+      background: var(--card-bg-elevated);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 22px 26px;
       margin-bottom: 20px;
     }
     .guide-step-grid {
@@ -2868,23 +3047,25 @@ INDEX_HTML = """<!DOCTYPE html>
       margin-bottom: 20px;
     }
     .guide-step-card {
-      background: #151c28;
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      border-radius: var(--radius-md);
       padding: 18px;
     }
     .guide-step-num {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 28px;
-      background: #2563eb;
+      width: 26px;
+      height: 26px;
+      background: var(--primary);
       color: #fff;
-      font-weight: 800;
+      font-weight: 700;
       border-radius: 50%;
-      font-size: 0.9rem;
+      font-size: 0.84rem;
       margin-right: 8px;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
     }
     .guide-table {
       width: 100%;
@@ -2895,10 +3076,10 @@ INDEX_HTML = """<!DOCTYPE html>
       border: 1px solid var(--card-border);
       padding: 10px 14px;
       text-align: left;
-      font-size: 0.88rem;
+      font-size: 0.84rem;
     }
     .guide-table th {
-      background: #111827;
+      background: var(--surface-inset);
       color: var(--text-muted);
       font-weight: 600;
     }
@@ -2912,55 +3093,10 @@ INDEX_HTML = """<!DOCTYPE html>
       margin-top: 12px;
     }
     .guide-faq-card {
-      background: #151c28;
-      border: 1px solid var(--card-border);
-      border-radius: 8px;
-      padding: 14px 18px;
-    }
-
-    /* Robot Hardware LED Indicator */
-    .robot-led-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 5px 12px;
-      border-radius: 999px;
-      font-size: 0.8rem;
-      font-weight: 700;
-      background: rgba(15, 23, 42, 0.7);
-      border: 1px solid var(--card-border);
-      transition: all 0.3s ease;
-    }
-    .led-bulb {
-      display: inline-block;
-      width: 11px;
-      height: 11px;
-      border-radius: 50%;
-      transition: all 0.25s ease;
-      flex-shrink: 0;
-    }
-    /* LED ON: Bright glowing emerald green */
-    .led-bulb.led-on {
-      background-color: #10b981;
-      box-shadow: 0 0 6px #10b981, 0 0 14px rgba(16, 185, 129, 0.7);
-      border: 1px solid #34d399;
-    }
-    /* LED OFF: Dim slate gray */
-    .led-bulb.led-off {
-      background-color: #475569;
-      box-shadow: none;
-      border: 1px solid #334155;
-    }
-    /* LED PENDING: Pulsing amber while waiting for feedback */
-    .led-bulb.led-pending {
-      background-color: #f59e0b;
-      box-shadow: 0 0 6px #f59e0b, 0 0 12px rgba(245, 158, 11, 0.6);
-      border: 1px solid #fbbf24;
-      animation: led-pulse 0.8s infinite alternate;
-    }
-    @keyframes led-pulse {
-      0% { opacity: 0.35; }
-      100% { opacity: 1; }
+      background: var(--surface-inset);
+      border: 1px solid var(--card-border-subtle);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
     }
   </style>
 </head>
@@ -2969,7 +3105,6 @@ INDEX_HTML = """<!DOCTYPE html>
   <header>
     <div class="brand">
       <span>reBot Arm B601</span>
-      <span style="font-weight: 400; color: var(--text-muted);">|</span>
     </div>
 
     <div class="nav-tabs">
@@ -2980,15 +3115,15 @@ INDEX_HTML = """<!DOCTYPE html>
       <button class="tab-btn" onclick="switchTab('guide')">User Guide</button>
     </div>
 
-    <div style="display: flex; gap: 10px; align-items: center;">
+    <div class="header-actions">
       <span id="badge-status" class="status-badge status-live">LIVE</span>
       <div id="badge-enabled-container" class="robot-led-badge" title="Hardware Motor Driver Feedback">
         <span class="led-bulb led-off" id="led-indicator-bulb"></span>
-        <span id="badge-enabled-text" style="color: #94a3b8;">ROBOT DISABLED</span>
+        <span id="badge-enabled-text" style="color: var(--text-muted);">ROBOT DISABLED</span>
       </div>
-      <span id="badge-waypoints" class="status-badge" style="background: rgba(99, 102, 241, 0.15); color: #818cf8; border: 1px solid #818cf8; cursor: pointer;" title="Active Robot Waypoints (Click to view & edit)" onclick="switchTab('waypoints')">2 WPs (0 App / 2 Ret)</span>
-      <button class="tab-btn" style="border: 1px solid #3b82f6; color: #60a5fa; background: rgba(59, 130, 246, 0.12); padding: 4px 12px; font-size: 0.8rem; font-weight: 700; border-radius: 999px; cursor: pointer;" onclick="switchTab('guide')" title="Open Quick User Guide">Quick Guide</button>
-      <span id="badge-mode" style="font-size: 0.8rem; color: var(--text-muted);">Connected</span>
+      <span id="badge-waypoints" class="status-badge status-waypoints" title="Active Robot Waypoints (Click to view & edit)" onclick="switchTab('waypoints')">2 WPs (0 App / 2 Ret)</span>
+      <button class="btn-guide-pill" onclick="switchTab('guide')" title="Open Quick User Guide">Quick Guide</button>
+      <span id="badge-mode" style="font-size: 0.78rem; color: var(--text-faint); font-family: var(--font-mono);">Connected</span>
     </div>
   </header>
 
@@ -2999,7 +3134,7 @@ INDEX_HTML = """<!DOCTYPE html>
         
         <!-- Left: Live Video Feed -->
         <div>
-          <div class="card" style="padding: 10px;">
+          <div class="card" style="padding: 12px;">
             <div class="video-container">
               <img id="stream-img" src="/video_feed" alt="Live Stream">
             </div>
@@ -3012,7 +3147,7 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="card">
             <div class="card-title">
               <span>DETECTED TUBES (LEFT TO RIGHT)</span>
-              <span id="tubes-count" style="font-size: 0.8rem; color: var(--text-muted);">0 tubes</span>
+              <span id="tubes-count" style="font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0 tubes</span>
             </div>
             <div id="tubes-bar" class="tube-buttons-bar">
               <span class="empty-queue-msg">Scanning table...</span>
@@ -3023,23 +3158,23 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="card">
             <div class="card-title">
               <span>PICKING QUEUE (CUSTOM ORDER)</span>
-              <button onclick="clearQueue()" style="background:transparent; border:none; color:var(--red); font-size:0.8rem; cursor:pointer;">Clear All</button>
+              <button onclick="clearQueue()" style="background:transparent; border:none; color:var(--danger); font-size:0.78rem; cursor:pointer; font-weight:600;">Clear All</button>
             </div>
             <div id="queue-box" class="queue-list">
               <span class="empty-queue-msg">No tubes queued. Click buttons above to add.</span>
             </div>
 
             <!-- Hardware Motor Driver Feedback Indicator Card -->
-            <div class="card" style="padding: 10px 14px; margin-bottom: 12px; background: #0c1017; border-left: 4px solid #475569;" id="card-led-border">
+            <div class="card" style="padding: 12px 16px; margin-bottom: 14px; background: var(--surface-inset); border: 1px solid var(--card-border-subtle); border-left: 3px solid #475569;" id="card-led-border">
               <div style="display: flex; justify-content: space-between; align-items: center;">
                 <div style="display: flex; align-items: center; gap: 10px;">
-                  <span class="led-bulb led-off" id="card-led-bulb" style="width: 14px; height: 14px;"></span>
+                  <span class="led-bulb led-off" id="card-led-bulb" style="width: 12px; height: 12px;"></span>
                   <div>
-                    <div style="font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Motor Driver Feedback</div>
-                    <div id="card-led-text" style="font-size: 0.92rem; font-weight: 700; color: #94a3b8;">Motors Disabled (Torque Off)</div>
+                    <div style="font-size: 0.7rem; color: var(--text-faint); text-transform: uppercase; font-weight: 600; letter-spacing: 0.05em;">Motor Driver Feedback</div>
+                    <div id="card-led-text" style="font-size: 0.88rem; font-weight: 600; color: #94a3b8; font-variant-numeric: tabular-nums;">Motors Disabled (Torque Off)</div>
                   </div>
                 </div>
-                <div id="card-led-subtext" style="font-size: 0.75rem; color: var(--text-muted); background: rgba(255,255,255,0.04); padding: 3px 8px; border-radius: 4px;">Hardware feedback offline</div>
+                <div id="card-led-subtext" style="font-size: 0.72rem; color: var(--text-faint); background: rgba(255,255,255,0.03); padding: 3px 8px; border-radius: var(--radius-sm); font-family: var(--font-mono);">Hardware feedback offline</div>
               </div>
             </div>
 
@@ -3090,9 +3225,9 @@ INDEX_HTML = """<!DOCTYPE html>
                 <label style="display:flex; align-items:center; gap:5px; font-size:0.75rem; color:var(--text-muted); cursor:pointer; user-select:none;">
                   <input type="checkbox" id="chk-autoscroll" checked style="width:auto; cursor:pointer;"> Auto-scroll
                 </label>
-                <button class="btn-sm" style="background:#334155; color:#fff;" onclick="copyAllLogs()" title="Copy all logs to clipboard">Copy</button>
-                <button class="btn-sm" style="background:#1e293b; color:#cbd5e1; border:1px solid #334155;" onclick="clearLogs()" title="Clear logs">Clear</button>
-                <button class="btn-sm" style="background:#451a03; color:#f59e0b; border:1px solid #78350f;" onclick="triggerTestError()" title="Simulate an error for debugging test">Test Error</button>
+                <button class="btn-sm" style="background:var(--card-bg-elevated); color:var(--text); border:1px solid var(--card-border);" onclick="copyAllLogs()" title="Copy all logs to clipboard">Copy</button>
+                <button class="btn-sm" style="background:var(--surface-inset); color:var(--text-muted); border:1px solid var(--card-border);" onclick="clearLogs()" title="Clear logs">Clear</button>
+                <button class="btn-sm" style="background:rgba(255,159,10,0.1); color:var(--warning); border:1px solid rgba(255,159,10,0.3);" onclick="triggerTestError()" title="Simulate an error for debugging test">Test Error</button>
               </div>
             </div>
 
@@ -3124,20 +3259,20 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card-title">
           <span>MOTION WAYPOINTS EDITOR (APPROACH &amp; RETREAT)</span>
           <div style="display: flex; gap: 8px;">
-            <button class="btn-sm" style="background:#334155; color:#fff;" onclick="loadWaypoints()">Reload</button>
-            <button class="btn-sm" style="background:var(--green); color:#fff;" onclick="saveWaypointsToDisk()">Save to waypoints.yaml</button>
+            <button class="btn-sm" style="background:var(--card-bg-elevated); color:var(--text); border:1px solid var(--card-border);" onclick="loadWaypoints()">Reload</button>
+            <button class="btn-sm" style="background:var(--primary); color:#fff; border:1px solid rgba(255,255,255,0.15);" onclick="saveWaypointsToDisk()">Save to waypoints.yaml</button>
           </div>
         </div>
-        <div style="background: #111622; border: 1px solid var(--card-border); border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div style="background: var(--surface-inset); border: 1px solid var(--card-border-subtle); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
           <div>
-            <span style="font-weight: 700; color: #818cf8;">Active Robot Configuration:</span>
-            <span style="font-family: monospace; color: #38bdf8; margin-left: 6px;" id="wp-cfg-filename">config/waypoints.yaml</span>
+            <span style="font-weight: 600; color: var(--text-muted); font-size: 0.82rem;">Active Robot Configuration:</span>
+            <span style="font-family: var(--font-mono); color: var(--cyan); margin-left: 6px; font-size: 0.84rem;" id="wp-cfg-filename">config/waypoints.yaml</span>
           </div>
-          <div style="font-size: 0.8rem; color: var(--text-muted);">
+          <div style="font-size: 0.78rem; color: var(--text-faint);">
             Waypoints shown below are the exact active via-points executed by the robot. Changes are saved and persist automatically.
           </div>
         </div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+        <p style="font-size: 0.84rem; color: var(--text-muted); margin-bottom: 16px;">
           Configure intermediate waypoints before grasping (Approach) and after grasping (Retreat). Position values can be Relative to Grasp Point or Absolute in Base Frame.
         </p>
 
@@ -3146,9 +3281,9 @@ INDEX_HTML = """<!DOCTYPE html>
           
           <!-- Column 1: Approach Waypoints -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title" style="color: #60a5fa;">
+            <div class="card-title" style="color: var(--cyan);">
               <span>APPROACH WAYPOINTS (READY POSE -> TARGET)</span>
-              <span id="approach-count" style="font-size: 0.8rem; color: var(--text-muted);">0 waypoints</span>
+              <span id="approach-count" style="font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0 waypoints</span>
             </div>
             
             <div id="approach-wps-list" class="wps-table-container"></div>
@@ -3215,7 +3350,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 <label for="app-pause" style="margin-bottom:0; cursor:pointer;">Pause at Waypoint (waits for Resume click)</label>
               </div>
 
-              <button class="btn-main" style="background:#2563eb; color:#fff; width:100%; padding:10px;" onclick="addWaypoint('approach')">
+              <button class="btn-main" style="background:var(--primary); color:#fff; width:100%; padding:10px; border-color:rgba(255,255,255,0.15);" onclick="addWaypoint('approach')">
                 + Append Approach Waypoint
               </button>
             </div>
@@ -3223,9 +3358,9 @@ INDEX_HTML = """<!DOCTYPE html>
 
           <!-- Column 2: Retreat Waypoints -->
           <div class="card" style="margin-bottom: 0;">
-            <div class="card-title" style="color: #34d399;">
+            <div class="card-title" style="color: var(--success);">
               <span>RETREAT WAYPOINTS (GRASPED -> READY POSE)</span>
-              <span id="retreat-count" style="font-size: 0.8rem; color: var(--text-muted);">2 waypoints</span>
+              <span id="retreat-count" style="font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">2 waypoints</span>
             </div>
 
             <div id="retreat-wps-list" class="wps-table-container"></div>
@@ -3292,7 +3427,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 <label for="ret-pause" style="margin-bottom:0; cursor:pointer;">Pause at Waypoint (waits for Resume click)</label>
               </div>
 
-              <button class="btn-main" style="background:#059669; color:#fff; width:100%; padding:10px;" onclick="addWaypoint('retreat')">
+              <button class="btn-main" style="background:var(--card-bg-elevated); color:var(--text); width:100%; padding:10px; border-color:var(--card-border);" onclick="addWaypoint('retreat')">
                 + Append Retreat Waypoint
               </button>
             </div>
@@ -3306,7 +3441,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <div id="tab-config" class="tab-content">
       <div class="card">
         <div class="card-title">SYSTEM CONFIGURATION (config/default.yaml)</div>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+        <p style="font-size: 0.84rem; color: var(--text-muted); margin-bottom: 16px;">
           Adjust camera, table plane, hand-eye trims, and ready pose directly. Changes write directly to disk.
         </p>
 
@@ -3353,7 +3488,7 @@ INDEX_HTML = """<!DOCTYPE html>
             <div class="form-group">
               <label>Grasp Z Offset / Depth (meters, vertical plunge)</label>
               <input type="number" step="0.001" id="cfg-grasp-z-offset" placeholder="-0.020">
-              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
+              <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 3px;">
                 Vertical plunge depth below table Z (negative descends deeper, e.g. -0.020m = -2cm).
               </div>
             </div>
@@ -3409,25 +3544,25 @@ INDEX_HTML = """<!DOCTYPE html>
             <div class="form-group">
               <label>Ready Open Width (meters, max stroke 0.09m)</label>
               <input type="number" step="0.001" min="0.0" max="0.09" id="cfg-gripper-ready-open" placeholder="0.055">
-              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
+              <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 3px;">
                 Width gripper opens to at Ready Pose and approach (0.055m = 5.5cm).
               </div>
             </div>
             <div class="form-group">
               <label>Fixed Close Width (meters, optional)</label>
               <input type="number" step="0.001" min="0.0" max="0.09" id="cfg-gripper-fixed-close" placeholder="0.030">
-              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
+              <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 3px;">
                 Fixed close target width (0.03m = 3.0cm). Leave blank to use adaptive YOLO detection width.
               </div>
             </div>
             <div class="form-group">
               <label>Close Offset Margin (meters)</label>
               <input type="number" step="0.001" min="0.0" max="0.05" id="cfg-gripper-close-offset" placeholder="0.010">
-              <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 3px;">
+              <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 3px;">
                 Subtracted from YOLO jaw width when closing adaptively (0.01m = 1.0cm).
               </div>
             </div>
-            <button class="btn btn-outline" style="width: 100%; margin-top: 6px; font-size: 0.82rem; padding: 7px 12px; border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8;" onclick="testGripperWidth()">
+            <button class="btn-main" style="width: 100%; margin-top: 6px; font-size: 0.82rem; padding: 8px 12px; border: 1px solid rgba(56, 189, 248, 0.3); color: var(--cyan); background: var(--surface-inset);" onclick="testGripperWidth()">
               Test Gripper Width Now
             </button>
           </div>
@@ -3435,7 +3570,7 @@ INDEX_HTML = """<!DOCTYPE html>
 
         <div style="display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap;">
           <button class="btn-save-cfg" style="margin-top: 0;" onclick="saveConfiguration(false)">Save Configuration to default.yaml</button>
-          <span id="cfg-sync-status" style="font-size: 0.85rem; color: #10b981; font-weight: 600;">Synced with default.yaml</span>
+          <span id="cfg-sync-status" style="font-size: 0.84rem; color: var(--success); font-weight: 500;">Synced with default.yaml</span>
         </div>
       </div>
     </div>
@@ -3448,75 +3583,78 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card" style="margin-bottom: 0;">
           <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
             <span>TEACH CONTROLS &amp; LIVE TELEMETRY</span>
-            <span id="teach-status-badge" class="status-badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid #475569;">TEACH MODE INACTIVE</span>
+            <span id="teach-status-badge" class="status-badge" style="background: rgba(148, 163, 184, 0.1); color: #94a3b8; border: 1px solid var(--card-border);">TEACH MODE INACTIVE</span>
           </div>
 
           <!-- Master Toggle & Safety Alert -->
           <div style="margin-bottom: 16px;">
             <div style="display: flex; gap: 10px; align-items: center; margin-bottom: 8px;">
-              <button id="btn-teach-toggle" class="btn" style="background: #f59e0b; color: #000; font-weight: 700; padding: 10px 18px; border-radius: 6px; cursor: pointer; border: none; font-size: 0.95rem;" onclick="toggleTeachMode()">
+              <button id="btn-teach-toggle" class="btn-main" style="background: var(--warning); color: #000; font-weight: 700; padding: 10px 18px; border: none; font-size: 0.9rem;" onclick="toggleTeachMode()">
                 Start Teach Mode (Gravity Compensation)
               </button>
             </div>
-            <div style="background: rgba(245, 158, 11, 0.08); border-left: 3px solid #f59e0b; padding: 8px 12px; font-size: 0.8rem; color: #fde68a; border-radius: 0 4px 4px 0;">
+            <div style="background: rgba(255, 159, 10, 0.06); border: 1px solid rgba(255, 159, 10, 0.18); border-left: 3px solid var(--warning); padding: 9px 12px; font-size: 0.78rem; color: #fde68a; border-radius: var(--radius-sm); line-height: 1.45;">
               <strong>Manual Hand Guidance</strong>: When Teach Mode is active, the motors enter compliant floating mode with gravity feedforward (tau = g(q)). Move the arm smoothly by hand to your target pose. Stopping Teach Mode automatically executes Safe Home.
             </div>
           </div>
 
           <!-- Slide Mode Selector (Segmented Toggle) -->
-          <div style="margin-bottom: 18px; background: rgba(15, 23, 42, 0.6); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--card-border);">
+          <div style="margin-bottom: 16px; background: var(--surface-inset); padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; text-transform: uppercase; letter-spacing: 0.05em;">Slide Mode Selector:</span>
-              <span id="teach-mode-indicator" style="font-size: 0.8rem; color: #38bdf8; font-family: monospace; font-weight: 600;">ACTIVE: CARTESIAN (XYZ RPY)</span>
+              <span style="font-size: 0.76rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Slide Mode Selector:</span>
+              <span id="teach-mode-indicator" style="font-size: 0.76rem; color: var(--cyan); font-family: var(--font-mono); font-weight: 600;">ACTIVE: CARTESIAN (XYZ RPY)</span>
             </div>
-            <div style="display: flex; gap: 6px; background: #0f131a; padding: 4px; border-radius: 6px; border: 1px solid #263143;">
-              <button id="btn-mode-cartesian" class="btn" style="flex: 1; padding: 8px 12px; font-size: 0.85rem; font-weight: 700; border-radius: 4px; border: none; cursor: pointer; background: #2563eb; color: #fff;" onclick="setTeachSlideMode('cartesian')">
+            <div style="display: flex; gap: 4px; background: var(--bg); padding: 3px; border-radius: var(--radius-sm); border: 1px solid var(--card-border);">
+              <button id="btn-mode-cartesian" class="tab-btn active" style="flex: 1; padding: 7px 10px; font-size: 0.8rem; font-weight: 600;" onclick="setTeachSlideMode('cartesian')">
                 Cartesian Mode (XYZ RPY)
               </button>
-              <button id="btn-mode-joints" class="btn" style="flex: 1; padding: 8px 12px; font-size: 0.85rem; font-weight: 700; border-radius: 4px; border: none; cursor: pointer; background: transparent; color: #94a3b8;" onclick="setTeachSlideMode('joints')">
+              <button id="btn-mode-joints" class="tab-btn" style="flex: 1; padding: 7px 10px; font-size: 0.8rem; font-weight: 600;" onclick="setTeachSlideMode('joints')">
                 Joint Angles Mode (J1-J6)
               </button>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">
+            <div style="font-size: 0.72rem; color: var(--text-faint); margin-top: 6px;">
               Waypoints recorded will be saved in the format matching whichever mode is selected above.
             </div>
           </div>
 
           <!-- Reactive Live Telemetry HUD -->
-          <div style="margin-bottom: 18px;">
+          <div style="margin-bottom: 16px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; text-transform: uppercase;">Live Arm Telemetry</span>
-              <span id="teach-gripper-display" style="font-size: 0.8rem; color: #34d399; font-family: monospace;">Gripper: 5.5 cm</span>
+              <span style="font-size: 0.76rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;">Live Arm Telemetry</span>
+              <span id="teach-gripper-display" style="font-size: 0.78rem; color: var(--success); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">Gripper: 5.5 cm</span>
             </div>
 
             <!-- Cartesian Telemetry Card (Shown when Cartesian mode selected) -->
             <div id="teach-hud-cartesian" style="display: block;">
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
-                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">X POSITION</div>
-                  <div id="hud-val-x" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.3500 m</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">X POSITION</div>
+                  <div id="hud-val-x" style="font-size: 1.15rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 3px;">+0.3500 m</div>
                 </div>
-                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">Y POSITION</div>
-                  <div id="hud-val-y" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.0000 m</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">Y POSITION</div>
+                  <div id="hud-val-y" style="font-size: 1.15rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 3px;">+0.0000 m</div>
                 </div>
-                <div style="background: #0f131a; padding: 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">Z POSITION</div>
-                  <div id="hud-val-z" style="font-size: 1.2rem; font-family: monospace; font-weight: 700; color: #38bdf8; margin-top: 4px;">+0.2800 m</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">Z POSITION</div>
+                  <div id="hud-val-z" style="font-size: 1.15rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 3px;">+0.2800 m</div>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">ROLL</div>
-                  <div id="hud-val-roll" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.00 rad (0.0°)</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">ROLL (X-AXIS)</div>
+                  <div id="hud-val-roll-deg" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-primary); margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-roll" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.000 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">PITCH</div>
-                  <div id="hud-val-pitch" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.60 rad (34.4°)</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">PITCH (Y-AXIS)</div>
+                  <div id="hud-val-pitch-deg" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-primary); margin-top: 2px;">34.4°</div>
+                  <div id="hud-val-pitch" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.600 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">YAW</div>
-                  <div id="hud-val-yaw" style="font-size: 0.95rem; font-family: monospace; font-weight: 700; color: #f472b6; margin-top: 2px;">0.00 rad (0.0°)</div>
+                <div style="background: var(--surface-inset); padding: 9px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">YAW (Z-AXIS)</div>
+                  <div id="hud-val-yaw-deg" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-primary); margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-yaw" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.000 rad</div>
                 </div>
               </div>
             </div>
@@ -3524,67 +3662,67 @@ INDEX_HTML = """<!DOCTYPE html>
             <!-- Joint Angles Telemetry Card (Shown when Joint mode selected) -->
             <div id="teach-hud-joints" style="display: none;">
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 8px;">
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 1 (BASE)</div>
-                  <div id="hud-val-j1" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
-                  <div id="hud-val-j1-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 1 (BASE)</div>
+                  <div id="hud-val-j1" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j1-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.000 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 2 (SHOULDER)</div>
-                  <div id="hud-val-j2" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">-37.2°</div>
-                  <div id="hud-val-j2-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">-0.650 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 2 (SHOULDER)</div>
+                  <div id="hud-val-j2" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">-37.2°</div>
+                  <div id="hud-val-j2-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">-0.650 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 3 (ELBOW)</div>
-                  <div id="hud-val-j3" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">-48.7°</div>
-                  <div id="hud-val-j3-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">-0.850 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 3 (ELBOW)</div>
+                  <div id="hud-val-j3" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">-48.7°</div>
+                  <div id="hud-val-j3-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">-0.850 rad</div>
                 </div>
               </div>
               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;">
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 4 (WRIST 1)</div>
-                  <div id="hud-val-j4" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
-                  <div id="hud-val-j4-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 4 (WRIST 1)</div>
+                  <div id="hud-val-j4" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j4-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.000 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 5 (WRIST 2)</div>
-                  <div id="hud-val-j5" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">25.8°</div>
-                  <div id="hud-val-j5-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.450 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 5 (WRIST 2)</div>
+                  <div id="hud-val-j5" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">25.8°</div>
+                  <div id="hud-val-j5-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.450 rad</div>
                 </div>
-                <div style="background: #0f131a; padding: 8px 10px; border-radius: 6px; border: 1px solid #263143; text-align: center;">
-                  <div style="font-size: 0.7rem; color: #64748b; font-weight: 700;">JOINT 6 (FLANGE)</div>
-                  <div id="hud-val-j6" style="font-size: 1.05rem; font-family: monospace; font-weight: 700; color: #22d3ee; margin-top: 2px;">0.0°</div>
-                  <div id="hud-val-j6-rad" style="font-size: 0.75rem; color: #64748b; font-family: monospace;">0.000 rad</div>
+                <div style="background: var(--surface-inset); padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle); text-align: center;">
+                  <div style="font-size: 0.68rem; color: var(--text-faint); font-weight: 600; letter-spacing: 0.04em;">JOINT 6 (FLANGE)</div>
+                  <div id="hud-val-j6" style="font-size: 1.05rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-weight: 600; color: var(--cyan); margin-top: 2px;">0.0°</div>
+                  <div id="hud-val-j6-rad" style="font-size: 0.72rem; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">0.000 rad</div>
                 </div>
               </div>
             </div>
 
             <!-- Alternate Mode Preview Summary -->
-            <div id="teach-hud-alt-summary" style="margin-top: 8px; font-size: 0.75rem; color: var(--text-muted); font-family: monospace; background: rgba(0,0,0,0.25); padding: 4px 8px; border-radius: 4px;">
+            <div id="teach-hud-alt-summary" style="margin-top: 8px; font-size: 0.74rem; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; background: var(--surface-inset); padding: 5px 10px; border-radius: var(--radius-sm); border: 1px solid var(--card-border-subtle);">
               Joints: [0.0°, -37.2°, -48.7°, 0.0°, 25.8°, 0.0°]
             </div>
           </div>
 
           <!-- Waypoint Snapshot Controls -->
-          <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid var(--card-border); padding: 12px; border-radius: 8px;">
-            <div style="font-size: 0.85rem; font-weight: 700; color: #cbd5e1; margin-bottom: 10px; text-transform: uppercase;">
+          <div style="background: var(--surface-inset); border: 1px solid var(--card-border-subtle); padding: 14px; border-radius: var(--radius-sm);">
+            <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em;">
               Capture Waypoint Snapshot
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
               <div>
-                <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px;">TRAJECTORY DURATION (SEC)</label>
-                <input type="number" id="teach-record-duration" value="2.0" step="0.1" min="0.5" max="15.0" style="width: 100%; box-sizing: border-box; background: #0f131a; border: 1px solid #263143; color: #fff; padding: 8px; border-radius: 4px; font-family: monospace;">
+                <label style="font-size: 0.74rem; color: var(--text-muted); display: block; margin-bottom: 4px;">TRAJECTORY DURATION (SEC)</label>
+                <input type="number" id="teach-record-duration" value="2.0" step="0.1" min="0.5" max="15.0" style="width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--card-border); color: #fff; padding: 8px 10px; border-radius: var(--radius-sm); font-family: var(--font-mono); font-variant-numeric: tabular-nums;">
               </div>
               <div>
-                <label style="font-size: 0.75rem; color: var(--text-muted); display: block; margin-bottom: 4px;">GRIPPER STATE AT POSE</label>
-                <select id="teach-record-gripper" style="width: 100%; box-sizing: border-box; background: #0f131a; border: 1px solid #263143; color: #fff; padding: 8px; border-radius: 4px;">
+                <label style="font-size: 0.74rem; color: var(--text-muted); display: block; margin-bottom: 4px;">GRIPPER STATE AT POSE</label>
+                <select id="teach-record-gripper" style="width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--card-border); color: #fff; padding: 8px 10px; border-radius: var(--radius-sm);">
                   <option value="keep">Keep Current State</option>
                   <option value="open">Open (Ready Open Width)</option>
                   <option value="close">Close (Clamped)</option>
                 </select>
               </div>
             </div>
-            <button id="btn-record-pose" class="btn" style="width: 100%; background: #2563eb; color: #fff; font-weight: 700; padding: 10px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.95rem;" onclick="recordTeachPose()">
+            <button id="btn-record-pose" class="btn-main" style="width: 100%; background: var(--primary); color: #fff; font-weight: 600; padding: 10px; border: 1px solid rgba(255,255,255,0.15); font-size: 0.9rem;" onclick="recordTeachPose()">
               Record Current Pose (saves as Cartesian)
             </button>
           </div>
@@ -3594,38 +3732,38 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="card" style="margin-bottom: 0;">
           <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
             <span>RECORDED WAYPOINTS BOARD</span>
-            <span id="teach-staged-count" class="status-badge" style="background: rgba(37, 99, 235, 0.15); color: #60a5fa; border: 1px solid #2563eb;">0 STAGED</span>
+            <span id="teach-staged-count" class="status-badge" style="background: rgba(10, 132, 255, 0.12); color: #60a5fa; border: 1px solid rgba(10, 132, 255, 0.28);">0 STAGED</span>
           </div>
 
-          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 12px;">
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 12px; line-height: 1.45;">
             Points recorded during manual guidance appear below. Review each pose before committing to the robot's active waypoints. You may discard unwanted poses or keep them.
           </div>
 
           <!-- Staged Items List -->
           <div id="teach-staged-container" style="max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; padding-right: 4px;">
-            <div id="teach-staged-empty" style="text-align: center; padding: 40px 16px; color: var(--text-muted); font-size: 0.85rem; border: 1px dashed var(--card-border); border-radius: 6px;">
+            <div id="teach-staged-empty" style="text-align: center; padding: 40px 16px; color: var(--text-faint); font-size: 0.82rem; border: 1px dashed var(--card-border); border-radius: var(--radius-sm);">
               No waypoints recorded yet.<br>Move arm to desired target pose and click "Record Current Pose".
             </div>
           </div>
 
           <!-- Staging Board Export & Action Controls -->
           <div style="border-top: 1px solid var(--card-border); padding-top: 14px;">
-            <div style="font-size: 0.8rem; font-weight: 700; color: #cbd5e1; margin-bottom: 8px; text-transform: uppercase;">
+            <div style="font-size: 0.76rem; font-weight: 600; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.04em;">
               Export Staged Points:
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
-              <button class="btn" style="background: rgba(37, 99, 235, 0.15); color: #60a5fa; border: 1px solid #2563eb; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('approach')">
+              <button class="btn-main" style="font-size: 0.82rem; padding: 8px;" onclick="commitTeachWaypoints('approach')">
                 Add to Approach Waypoints
               </button>
-              <button class="btn" style="background: rgba(129, 140, 248, 0.15); color: #a5b4fc; border: 1px solid #818cf8; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('retreat')">
+              <button class="btn-main" style="font-size: 0.82rem; padding: 8px;" onclick="commitTeachWaypoints('retreat')">
                 Add to Retreat Waypoints
               </button>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-              <button class="btn" style="background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid #10b981; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="commitTeachWaypoints('ready_pose')">
+              <button class="btn-main" style="font-size: 0.82rem; padding: 8px;" onclick="commitTeachWaypoints('ready_pose')">
                 Set as Ready Pose
               </button>
-              <button class="btn" style="background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid #ef4444; font-weight: 700; padding: 8px; border-radius: 6px; cursor: pointer;" onclick="clearTeachStaging()">
+              <button class="btn-main" style="background: rgba(255, 69, 58, 0.1); color: var(--danger); border-color: rgba(255, 69, 58, 0.25); font-size: 0.82rem; padding: 8px;" onclick="clearTeachStaging()">
                 Discard All
               </button>
             </div>
@@ -3641,14 +3779,14 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="guide-banner">
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
           <div>
-            <h2 style="font-size: 1.3rem; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 8px;">
+            <h2 style="font-size: 1.25rem; font-weight: 700; color: #fff; letter-spacing: -0.01em;">
               Station Operator &amp; Quick-Start Guide
             </h2>
-            <p style="color: var(--text-muted); font-size: 0.9rem; margin-top: 6px;">
+            <p style="color: var(--text-muted); font-size: 0.86rem; margin-top: 6px;">
               A simple, step-by-step walkthrough for lab operators and engineers to pick test tubes with the reBot Arm B601.
             </p>
           </div>
-          <button onclick="switchTab('station')" class="btn-main" style="background: #2563eb; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;">
+          <button onclick="switchTab('station')" class="btn-main" style="background: var(--primary); color: #fff; border: 1px solid rgba(255,255,255,0.15); padding: 8px 16px;">
             Open Grasping Station
           </button>
         </div>
@@ -3664,12 +3802,12 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">1</span>
-              <strong style="color: #60a5fa; font-size: 1rem;">Move Arm to Ready Pose</strong>
+              <strong style="color: var(--cyan); font-size: 0.95rem;">Move Arm to Ready Pose</strong>
             </div>
-            <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
-              When the station starts, the robot holds still for safety. Click the blue <strong>"Ready Pose"</strong> button. The robotic arm smoothly moves above the rack, opens its gripper, and aims the camera directly at the test tubes.
+            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
+              When the station starts, the robot holds still for safety. Click the <strong>"Ready Pose"</strong> button. The robotic arm smoothly moves above the rack, opens its gripper, and aims the camera directly at the test tubes.
             </p>
-            <div style="margin-top: 12px; background: rgba(59, 130, 246, 0.1); border-left: 3px solid #3b82f6; padding: 6px 10px; font-size: 0.8rem; color: #93c5fd;">
+            <div style="margin-top: 12px; background: rgba(10, 132, 255, 0.08); border-left: 3px solid var(--primary); padding: 8px 10px; font-size: 0.78rem; color: #93c5fd; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
               <em>Tip: Always ensure the workspace is clear before moving to Ready Pose.</em>
             </div>
           </div>
@@ -3677,12 +3815,12 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">2</span>
-              <strong style="color: #34d399; font-size: 1rem;">Select Tubes to Pick</strong>
+              <strong style="color: var(--success); font-size: 0.95rem;">Select Tubes to Pick</strong>
             </div>
-            <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
+            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
               Look at the live video stream. Tubes are automatically numbered from left to right (<strong>#1, #2, #3...</strong>). Click the tube buttons in the order you want them picked (e.g. click <strong>#3</strong>, then <strong>#1</strong>). They appear in the <strong>PICKING QUEUE</strong> list.
             </p>
-            <div style="margin-top: 12px; background: rgba(16, 185, 129, 0.1); border-left: 3px solid #10b981; padding: 6px 10px; font-size: 0.8rem; color: #6ee7b7;">
+            <div style="margin-top: 12px; background: rgba(48, 209, 88, 0.08); border-left: 3px solid var(--success); padding: 8px 10px; font-size: 0.78rem; color: #86efac; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
               <em>Tip: Click X on any tube in the queue if you made a mistake, or click "Clear All".</em>
             </div>
           </div>
@@ -3690,12 +3828,12 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="guide-step-card">
             <div style="display: flex; align-items: center; margin-bottom: 10px;">
               <span class="guide-step-num">3</span>
-              <strong style="color: #f59e0b; font-size: 1rem;">Click "GRASP QUEUE"</strong>
+              <strong style="color: var(--warning); font-size: 0.95rem;">Click "GRASP QUEUE"</strong>
             </div>
-            <p style="color: #cbd5e1; font-size: 0.88rem; line-height: 1.5;">
-              Click the green <strong>"GRASP QUEUE"</strong> button. The camera freezes to lock coordinates, and the arm automatically hovers (+10cm), descends, clamps the tube, lifts straight up, and tilts away safely. Once finished, it returns to live mode!
+            <p style="color: var(--text); font-size: 0.85rem; line-height: 1.55;">
+              Click the <strong>"GRASP QUEUE"</strong> button. The camera freezes to lock coordinates, and the arm automatically hovers (+10cm), descends, clamps the tube, lifts straight up, and tilts away safely. Once finished, it returns to live mode!
             </p>
-            <div style="margin-top: 12px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid #f59e0b; padding: 6px 10px; font-size: 0.8rem; color: #fde68a;">
+            <div style="margin-top: 12px; background: rgba(255, 159, 10, 0.08); border-left: 3px solid var(--warning); padding: 8px 10px; font-size: 0.78rem; color: #fde68a; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;">
               <em>Tip: Never reach into the robot workspace while the status shows "EXECUTING".</em>
             </div>
           </div>
@@ -3703,154 +3841,97 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- Button Controls Cheat Sheet -->
+      <!-- Controls & Shortcuts Reference Table -->
       <div class="card">
         <div class="card-title">
-          <span>DASHBOARD BUTTONS CHEAT SHEET</span>
+          <span>WEB DASHBOARD CONTROLS REFERENCE</span>
         </div>
         <table class="guide-table">
           <thead>
             <tr>
-              <th style="width: 180px;">Button</th>
-              <th style="width: 140px;">Type / Style</th>
-              <th>What It Does</th>
-              <th>When to Click It</th>
+              <th style="width: 22%;">Control / Button</th>
+              <th style="width: 28%;">Function</th>
+              <th>Operational Safety &amp; Notes</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><strong>GRASP QUEUE</strong></td>
-              <td><span style="color:#10b981; font-weight:700;">Green (Main)</span></td>
-              <td>Freezes target coordinates and executes pick-and-retreat sequence for all queued tubes.</td>
-              <td>After selecting tubes in the queue.</td>
+              <td><strong style="color: var(--danger);">EMERGENCY STOP</strong></td>
+              <td>Immediately halts execution, opens gripper, returns to Safe Home, and disables motors.</td>
+              <td>Top-level emergency override. Use anytime unexpected motion or obstacle collision occurs.</td>
             </tr>
             <tr>
-              <td><strong>EMERGENCY STOP</strong></td>
-              <td><span style="color:#ef4444; font-weight:700;">Red (Full Width)</span></td>
-              <td>Immediately halts any ongoing execution, opens gripper to Ready Open Width, returns arm safely to Home pose, and disables motors in strict order.</td>
-              <td>Any time during execution if a problem occurs or immediate abort is required.</td>
+              <td><strong style="color: var(--primary);">GRASP QUEUE</strong></td>
+              <td>Executes sequential grasp on all selected tubes.</td>
+              <td>Freezes video frame during sequence; runs Pre-grasp -> Grasp -> Retreat Waypoints -> Ready Pose.</td>
             </tr>
             <tr>
-              <td><strong>Ready Pose</strong></td>
-              <td><span style="color:#60a5fa; font-weight:700;">Blue</span></td>
-              <td>Moves arm to overhead observation height and opens gripper.</td>
-              <td>First action when starting the station.</td>
+              <td><strong style="color: var(--text-primary);">Macro Center</strong></td>
+              <td>Tests camera alignment and centers gripper over target tube.</td>
+              <td>Useful to verify hand-eye calibration before initiating full grasp.</td>
             </tr>
             <tr>
-              <td><strong>Enable Robot</strong></td>
-              <td><span style="color:#10b981; font-weight:700;">Green Outline</span></td>
-              <td>Sends CAN enable command to arm. The LED indicator turns <strong>glowing green only after the robot driver confirms active torque feedback</strong>.</td>
-              <td>If robot was disabled, or after power up.</td>
+              <td><strong style="color: var(--text-primary);">Safe Home</strong></td>
+              <td>Moves arm to absolute vertical zero posture.</td>
+              <td>Safely resets arm position before powering off or recalibrating.</td>
             </tr>
             <tr>
-              <td><strong>Disable Robot</strong></td>
-              <td><span style="color:#ef4444; font-weight:700;">Red Outline</span></td>
-              <td>Automatically homes the arm safely first, then cuts motor torque (limp mode) to prevent abrupt drops or danger. The LED indicator turns <strong>dim gray</strong>.</td>
-              <td>When shutting down or hand-positioning.</td>
+              <td><strong style="color: var(--text-primary);">Ready Pose</strong></td>
+              <td>Returns arm to the pre-configured viewing pose above rack.</td>
+              <td>Default observing position defined in <code>config/default.yaml</code>.</td>
             </tr>
             <tr>
-              <td><strong>Safe Home</strong></td>
-              <td><span style="color:#f59e0b; font-weight:700;">Amber</span></td>
-              <td>Releases gripper and smoothly parks arm at zero position via minimum-jerk path.</td>
-              <td>When finishing work or aborting safely.</td>
-            </tr>
-            <tr>
-              <td><strong>Macro Center</strong></td>
-              <td><span style="color:#818cf8; font-weight:700;">Purple</span></td>
-              <td>Centers camera optical axis directly over the selected tube.</td>
-              <td>To inspect a specific tube from above.</td>
-            </tr>
-            <tr>
-              <td><strong>Reset / Unfreeze</strong></td>
-              <td><span style="color:#94a3b8; font-weight:700;">Slate Gray</span></td>
-              <td>Unfreezes video feed and returns camera to live scanning mode.</td>
-              <td>If you want to cancel a frozen scan.</td>
-            </tr>
-            <tr>
-              <td><strong>Resume from Pause</strong></td>
-              <td><span style="color:#ef4444; font-weight:700;">Red Flashing</span></td>
-              <td>Resumes motion if an approach or retreat waypoint has a pause trigger.</td>
-              <td>Only visible during programmed pauses.</td>
+              <td><strong style="color: var(--text-primary);">Reset / Unfreeze</strong></td>
+              <td>Unfreezes the camera stream and returns to real-time detection.</td>
+              <td>Clears temporary frozen visual cache without moving the physical arm.</td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <!-- Navigation Tabs Guide -->
+      <!-- FAQ & Troubleshooting -->
       <div class="card">
         <div class="card-title">
-          <span>THE 4 DASHBOARD TABS EXPLAINED</span>
+          <span>SAFETY, TROUBLESHOOTING &amp; FREQUENTLY ASKED QUESTIONS</span>
         </div>
-        <div class="guide-step-grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
-          <div class="guide-step-card">
-            <strong style="color: #60a5fa;">Visual Grasping</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Main operational view: live video stream, detected tubes, picking queue, motion controls, and system telemetry log.
+        <div class="guide-faq-grid">
+          
+          <div class="guide-faq-card">
+            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">What if a tube is not detected on the video?</h4>
+            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
+              Ensure the camera focus is set correctly in the <strong>Robot &amp; Camera Config</strong> tab. You can preview focus values using <code>scripts/preview_camera_focus.py</code>. Also verify adequate table lighting.
             </p>
           </div>
-          <div class="guide-step-card">
-            <strong style="color: #818cf8;">Waypoints Editor</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Add, inspect, or delete approach and retreat waypoints (e.g. lift height, tilt angles). Automatically saves to <code>config/waypoints.yaml</code>.
+
+          <div class="guide-faq-card">
+            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">How does Teach Mode work?</h4>
+            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
+              Open the <strong>Teach &amp; Record</strong> tab and click <em>Start Teach Mode</em>. Gravity compensation activates, letting you float and guide the arm by hand. Record poses in either Cartesian (XYZ RPY) or Joint Angles mode.
             </p>
           </div>
-          <div class="guide-step-card">
-            <strong style="color: #34d399;">Robot &amp; Camera Config</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Adjust camera focus, table Z height, pre-grasp clearances, and ready pose coordinates without modifying source code. Saves to <code>config/default.yaml</code>.
+
+          <div class="guide-faq-card">
+            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">Where are waypoints and configurations saved?</h4>
+            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
+              Waypoints are saved directly to <code>config/waypoints.yaml</code> and general robot/camera parameters are stored in <code>config/default.yaml</code>. Both auto-sync seamlessly with the web dashboard.
             </p>
           </div>
-          <div class="guide-step-card">
-            <strong style="color: #fbbf24;">User Guide</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              This quick-start reference guide! Always available for operators, lab technicians, and new engineers.
+
+          <div class="guide-faq-card">
+            <h4 style="color: #60a5fa; font-size: 0.92rem; margin-bottom: 8px;">For complete engineering documentation:</h4>
+            <p style="color: var(--text-muted); font-size: 0.82rem; line-height: 1.5;">
+              Please refer to <code style="color: var(--cyan);">docs/WEB_GUI_USER_GUIDE.md</code> for advanced configuration details, kinematics calculations, and error resolution.
             </p>
           </div>
+
         </div>
       </div>
 
-      <!-- Frequently Asked Questions -->
-      <div class="card" style="margin-bottom: 0;">
-        <div class="card-title">
-          <span>FREQUENTLY ASKED QUESTIONS &amp; SAFETY</span>
-        </div>
-        <div class="guide-faq-grid">
-          <div class="guide-faq-card">
-            <strong style="color: #fff; font-size: 0.9rem;">Q: Why doesn't the robot move when the server starts?</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              For safety, the robot enables holding torque on startup but <strong>holds still</strong> until you explicitly click <strong>"Ready Pose"</strong>.
-            </p>
-          </div>
-          <div class="guide-faq-card">
-            <strong style="color: #fff; font-size: 0.9rem;">Q: Can I pick tubes in reverse or custom order?</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Yes! Tubes are indexed <strong>#1, #2, #3...</strong> from left to right. Click buttons in whatever order you want (e.g. #4, then #2, then #1).
-            </p>
-          </div>
-          <div class="guide-faq-card">
-            <strong style="color: #fff; font-size: 0.9rem;">Q: How do I abort motion if something goes wrong?</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Click <strong>"Safe Home"</strong> to open the gripper and smoothly park the arm at zero position, or click <strong>"Disable Robot"</strong> to immediately cut motor power.
-            </p>
-          </div>
-          <div class="guide-faq-card">
-            <strong style="color: #fff; font-size: 0.9rem;">Q: What does the System Telemetry console show?</strong>
-            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 6px; line-height: 1.4;">
-              Real-time activity logs and error diagnostics. If an error occurs, an active red alert banner appears with clickable stack tracebacks for debugging.
-            </p>
-          </div>
-        </div>
-        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--card-border); font-size: 0.82rem; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
-          <span>Complete documentation file available at: <code>docs/WEB_GUI_USER_GUIDE.md</code></span>
-          <button onclick="switchTab('station')" class="btn-main" style="background: transparent; border: 1px solid var(--card-border); color: #cbd5e1; padding: 4px 12px; border-radius: 4px; cursor: pointer;">
-            Back to Station
-          </button>
-        </div>
-      </div>
     </div>
   </main>
 
-  <div id="toast" class="toast">Configuration Saved!</div>
+  <div id="toast" class="toast">Configuration saved successfully</div>
+
 
   <script>
     let currentState = 'live';
